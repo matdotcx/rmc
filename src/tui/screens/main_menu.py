@@ -27,12 +27,16 @@ class MainMenuScreen(Screen):
         with Container(id="main-menu-container"):
             yield Static("\n  Music\n", id="main-menu-header")
             yield ListView(id="main-menu-list")
+            yield Static("", id="main-menu-status")
 
     def on_mount(self) -> None:
         """Set up the screen when mounted."""
         self._populate_menu()
+        self._update_status()
         # Disabled inactivity timer for now - causes lockups
         # self._start_inactivity_timer()
+        # Update status periodically
+        self.set_interval(2.0, self._update_status)
 
     def _populate_menu(self) -> None:
         """Populate the menu items."""
@@ -46,12 +50,22 @@ class MainMenuScreen(Screen):
             "Albums",
             "Songs",
             "Search",
+            "Reindex Library",
         ]
 
         for item in items:
             menu_view.append(ListItem(Label(item)))
 
         menu_view.focus()
+
+    def _update_status(self) -> None:
+        """Update the index status display."""
+        try:
+            status_text = self.app.get_index_status()
+            status = self.query_one("#main-menu-status", Static)
+            status.update(f"\n  Index: {status_text}\n")
+        except Exception:
+            pass  # Status update is optional
 
     def _reset_inactivity_timer(self) -> None:
         """Reset the inactivity timer."""
@@ -86,7 +100,7 @@ class MainMenuScreen(Screen):
         if event.list_view.index is None:
             return
 
-        items = ["Now Playing", "Playlists", "Artists", "Albums", "Songs", "Search"]
+        items = ["Now Playing", "Playlists", "Artists", "Albums", "Songs", "Search", "Reindex Library"]
         selected = items[event.list_view.index]
 
         if selected == "Now Playing":
@@ -107,6 +121,8 @@ class MainMenuScreen(Screen):
         elif selected == "Search":
             from src.tui.screens.search import SearchScreen
             self.app.push_screen(SearchScreen())
+        elif selected == "Reindex Library":
+            self.app.action_reindex()
 
     def action_select_item(self) -> None:
         """Select the current menu item."""

@@ -4,25 +4,28 @@ from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer
 from textual.binding import Binding
 from textual import work
-from typing import Optional
+from typing import Optional, List, Dict, Any, Tuple
 import asyncio
 
 from src.music.pyobjc_bridge import PyObjCBridge as AppleScriptWrapper, MusicAppError
 from src.tui.screens.now_playing import NowPlayingScreen
 from src.config.settings import ConfigManager
+from src.index import LibraryIndex, LibraryIndexer
 
 
 class MusicController:
     """Controller for Music.app operations."""
 
-    def __init__(self, app: 'RMCApp'):
+    def __init__(self, app: 'RMCApp', index: Optional[LibraryIndex] = None):
         """Initialize music controller.
 
         Args:
             app: Reference to main app
+            index: Optional library index for fast search/browse
         """
         self.app = app
         self.music = AppleScriptWrapper()
+        self.index = index
 
     def playpause(self) -> None:
         """Toggle play/pause."""
@@ -146,18 +149,43 @@ class MusicController:
         except MusicAppError:
             return []
 
-    def search_library(self, query: str):
-        """Search the music library."""
+    def search_library(self, query: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Search the music library using index if available.
+
+        Args:
+            query: Search query string
+            limit: Maximum results to return
+
+        Returns:
+            List of track dictionaries
+        """
+        # Use index if available and has data
+        if self.index and self.index.exists():
+            return self.index.search(query, limit=limit)
+
+        # Fall back to live AppleScript search
         try:
             return self.music.search_library(query)
         except MusicAppError:
             return []
 
-    def get_playlist_tracks(self, playlist_name: str):
-        """Get tracks from a playlist."""
+    def get_playlist_tracks(self, playlist_name: str) -> List[Dict[str, Any]]:
+        """Get tracks from a playlist.
+
+        Args:
+            playlist_name: Name of the playlist
+
+        Returns:
+            List of track dictionaries
+        """
+        # Use live query for playlists to ensure accuracy
+        # (playlists may change more frequently than the full library)
         try:
             return self.music.get_playlist_tracks(playlist_name)
         except MusicAppError:
+            # Fall back to index if live query fails
+            if self.index and self.index.exists():
+                return self.index.get_playlist_tracks(playlist_name)
             return []
 
     def play_track(self, track: dict):
@@ -171,29 +199,68 @@ class MusicController:
         except MusicAppError as e:
             self.app.notify(f"Error: {e}", severity="error")
 
-    def get_tracks_by_artist(self, artist: str):
-        """Get all tracks by a specific artist."""
+    def get_tracks_by_artist(self, artist: str) -> List[Dict[str, Any]]:
+        """Get all tracks by a specific artist.
+
+        Args:
+            artist: Artist name
+
+        Returns:
+            List of track dictionaries
+        """
+        # Use index if available
+        if self.index and self.index.exists():
+            return self.index.get_tracks_by_artist(artist)
+
         try:
             return self.music.get_tracks_by_artist(artist)
         except MusicAppError:
             return []
 
-    def get_tracks_by_album(self, album: str, artist: str = ""):
-        """Get all tracks in a specific album."""
+    def get_tracks_by_album(self, album: str, artist: str = "") -> List[Dict[str, Any]]:
+        """Get all tracks in a specific album.
+
+        Args:
+            album: Album name
+            artist: Artist name (optional)
+
+        Returns:
+            List of track dictionaries
+        """
+        # Use index if available
+        if self.index and self.index.exists():
+            return self.index.get_tracks_by_album(album, artist)
+
         try:
             return self.music.get_tracks_by_album(album, artist)
         except MusicAppError:
             return []
 
-    def get_all_artists(self):
-        """Get list of all artists."""
+    def get_all_artists(self) -> List[str]:
+        """Get list of all artists.
+
+        Returns:
+            List of artist names
+        """
+        # Use index if available
+        if self.index and self.index.exists():
+            return self.index.get_all_artists()
+
         try:
             return self.music.get_all_artists()
         except MusicAppError:
             return []
 
-    def get_all_albums(self):
-        """Get list of all albums."""
+    def get_all_albums(self) -> List[Tuple[str, str]]:
+        """Get list of all albums.
+
+        Returns:
+            List of (album_name, artist_name) tuples
+        """
+        # Use index if available
+        if self.index and self.index.exists():
+            return self.index.get_all_albums()
+
         try:
             return self.music.get_all_albums()
         except MusicAppError:
@@ -259,6 +326,12 @@ class RMCApp(App):
         height: auto;
         margin-bottom: 1;
     }
+
+    #main-menu-status {
+        height: auto;
+        margin-top: 1;
+        color: $text-muted;
+    }
     """
 
     BINDINGS = [
@@ -271,10 +344,21 @@ class RMCApp(App):
     def __init__(self):
         """Initialize the application."""
         super().__init__()
-        self.music_controller = MusicController(self)
         self.config_manager = ConfigManager()
+
+        # Initialize library index
+        self.library_index = LibraryIndex()
+        self.music_controller = MusicController(self, index=self.library_index)
+
+        # Initialize indexer (bridge from music_controller)
+        self.library_indexer = LibraryIndexer(
+            self.music_controller.music,
+            self.library_index
+        )
+
         self._update_task: Optional[asyncio.Task] = None
         self._should_exit = False
+        self._indexing = False
 
     def compose(self) -> ComposeResult:
         """Create child widgets."""
@@ -286,6 +370,7 @@ class RMCApp(App):
         from src.tui.screens.main_menu import MainMenuScreen
         self.push_screen(MainMenuScreen())
         self.start_update_loop()
+        self._check_index_on_launch()
 
     @work(exclusive=True, thread=True)
     def start_update_loop(self) -> None:
@@ -366,7 +451,97 @@ class RMCApp(App):
     def action_quit(self) -> None:
         """Quit the application."""
         self._should_exit = True
+        if self.library_index:
+            self.library_index.close()
         self.exit()
+
+    def _check_index_on_launch(self) -> None:
+        """Check if index needs to be built or refreshed on launch."""
+        config = self.config_manager.config.index
+
+        if not config.auto_index_on_launch:
+            return
+
+        # Check if index exists and is not stale
+        if not self.library_index.exists():
+            self.notify("Building library index for first time...")
+            self._trigger_reindex()
+        elif self.library_index.is_stale(config.stale_warning_hours):
+            metadata = self.library_index.get_metadata()
+            track_count = metadata.get('track_count', 0)
+            age = self.library_index.get_age_description()
+            self.notify(f"Index stale ({track_count} tracks, {age}) - rebuilding...")
+            self._trigger_reindex()
+
+    @work(exclusive=True, thread=True)
+    def _trigger_reindex(self) -> None:
+        """Trigger background reindex."""
+        if self._indexing:
+            return
+
+        self._indexing = True
+
+        def progress_callback(current: int, total: int, phase: str) -> None:
+            if total > 0:
+                self.call_from_thread(
+                    self.notify,
+                    f"Indexing: {phase} ({current}/{total})"
+                )
+
+        self.library_indexer.set_progress_callback(progress_callback)
+
+        success = self.library_indexer.rebuild_full()
+
+        self._indexing = False
+
+        if success:
+            metadata = self.library_index.get_metadata()
+            track_count = metadata.get('track_count', 0)
+            self.call_from_thread(
+                self.notify,
+                f"Index complete: {track_count} tracks"
+            )
+        else:
+            self.call_from_thread(
+                self.notify,
+                "Index build failed",
+                severity="error"
+            )
+
+    def action_reindex(self) -> None:
+        """Manually trigger library reindex."""
+        if self._indexing:
+            self.notify("Indexing already in progress...")
+            return
+
+        self.notify("Starting library reindex...")
+        self._trigger_reindex()
+
+    def get_index_status(self) -> str:
+        """Get human-readable index status.
+
+        Returns:
+            Status string like "15,432 tracks (2h ago)" or "not indexed"
+        """
+        if self._indexing:
+            progress = self.library_indexer.get_progress()
+            current, total, phase = progress
+            if total > 0:
+                return f"Indexing: {current}/{total}"
+            return f"Indexing: {phase}"
+
+        if not self.library_index.exists():
+            return "Not indexed"
+
+        metadata = self.library_index.get_metadata()
+        track_count = metadata.get('track_count', 0)
+        age = self.library_index.get_age_description()
+
+        config = self.config_manager.config.index
+        if self.library_index.is_stale(config.stale_warning_hours):
+            return f"{track_count:,} tracks (stale - {age})"
+
+        return f"{track_count:,} tracks ({age})"
 
 
 def run():

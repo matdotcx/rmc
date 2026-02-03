@@ -20,6 +20,13 @@ class UIConfig(BaseModel):
     update_interval: float = 1.0  # seconds
 
 
+class IndexConfig(BaseModel):
+    """Library index configuration."""
+    auto_index_on_launch: bool = True
+    auto_index_interval_hours: int = 24  # 0 = disabled
+    stale_warning_hours: int = 48
+
+
 class APIConfig(BaseModel):
     """API configuration."""
     storefront: str = "us"
@@ -33,6 +40,7 @@ class AppConfig(BaseModel):
     developer: AppleDeveloperConfig = Field(default_factory=AppleDeveloperConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     api: APIConfig = Field(default_factory=APIConfig)
+    index: IndexConfig = Field(default_factory=IndexConfig)
 
 
 class ConfigManager:

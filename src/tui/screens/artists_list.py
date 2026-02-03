@@ -28,11 +28,7 @@ class ArtistsListScreen(Screen):
 
     def on_mount(self) -> None:
         """Set up the screen when mounted."""
-        # For large libraries, redirect to search
-        # TODO: Optimize for large libraries
-        from src.tui.screens.search import SearchScreen
-        self.app.pop_screen()
-        self.app.push_screen(SearchScreen())
+        self._load_artists()
 
     @work(exclusive=True, thread=True)
     def _load_artists(self) -> None:
