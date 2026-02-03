@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rmc"
+version = "0.1.0"
+description = "Apple Music Remote Control TUI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.50.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.26.0",
+]
+
+[project.scripts]
+rmc = "src.main:main"
+
+[tool.setuptools]
+packages = ["src", "src.tui", "src.tui.screens", "src.tui.widgets", "src.music", "src.config"]
