@@ -13,7 +13,9 @@ class SearchScreen(Screen):
     """Screen for searching the music library."""
 
     BINDINGS = [
+        ("left", "back", "Back"),
         ("escape", "back", "Back"),
+        ("right", "play_selected", "Play"),
         ("enter", "play_selected", "Play"),
         ("tab", "focus_results", "Results"),
     ]

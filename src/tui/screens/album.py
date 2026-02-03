@@ -13,7 +13,9 @@ class AlbumScreen(Screen):
     """Screen for viewing tracks in a specific album."""
 
     BINDINGS = [
+        ("left", "back", "Back"),
         ("escape", "back", "Back"),
+        ("right", "play_selected", "Play"),
         ("enter", "play_selected", "Play"),
     ]
 

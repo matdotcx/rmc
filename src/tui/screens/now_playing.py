@@ -12,6 +12,8 @@ class NowPlayingScreen(Screen):
     """Screen displaying currently playing track and playback controls."""
 
     BINDINGS = [
+        ("left", "back", "Back"),
+        ("escape", "back", "Back"),
         ("space", "playpause", "Play/Pause"),
         ("n", "next_track", "Next"),
         ("p", "previous_track", "Previous"),
@@ -181,3 +183,7 @@ class NowPlayingScreen(Screen):
         if self.track_album and self.track_album != "Unknown Album":
             from src.tui.screens.album import AlbumScreen
             self.app.push_screen(AlbumScreen(self.track_album, self.track_artist))
+
+    def action_back(self) -> None:
+        """Go back to previous screen."""
+        self.app.pop_screen()

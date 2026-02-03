@@ -13,7 +13,9 @@ class BrowseScreen(Screen):
     """Screen for browsing playlists."""
 
     BINDINGS = [
+        ("left", "back", "Back"),
         ("escape", "back", "Back"),
+        ("right", "view_playlist", "View"),
         ("enter", "view_playlist", "View"),
     ]
 

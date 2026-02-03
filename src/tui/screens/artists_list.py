@@ -13,7 +13,9 @@ class ArtistsListScreen(Screen):
     """Screen for browsing all artists."""
 
     BINDINGS = [
+        ("left", "back", "Back"),
         ("escape", "back", "Back"),
+        ("right", "view_artist", "View"),
         ("enter", "view_artist", "View"),
     ]
 

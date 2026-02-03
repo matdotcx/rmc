@@ -103,12 +103,41 @@ class LibraryIndexer:
             self._update_progress(0, 0, f"Error: {e}")
             return False
 
+    def _get_track_count(self) -> int:
+        """Get total track count quickly.
+
+        Returns:
+            Number of tracks in library, or 0 on error
+        """
+        script = '''
+        tell application "Music"
+            return count of tracks of library playlist 1
+        end tell
+        '''
+        try:
+            result = subprocess.run(
+                ['osascript', '-e', script],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                return int(result.stdout.strip())
+        except Exception:
+            pass
+        return 0
+
     def _index_tracks(self) -> bool:
         """Scan all tracks via AppleScript.
 
         Returns:
             True if successful
         """
+        # First get the count so we can show progress
+        track_count = self._get_track_count()
+        self._total = track_count
+        self._update_progress(0, track_count, f"Scanning {track_count:,} tracks...")
+
         # Use AppleScript to get all tracks in batches
         # This is more efficient than iterating via PyObjC
         script = '''

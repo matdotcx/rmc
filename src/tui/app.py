@@ -275,10 +275,32 @@ class RMCApp(App):
         background: $surface;
     }
 
+    /* Main menu iPod style */
+    #main-menu-header {
+        width: 100%;
+        height: 1;
+        background: $surface-darken-1;
+        text-style: bold;
+    }
+
+    #main-menu-list {
+        width: 100%;
+        height: auto;
+        padding: 0;
+    }
+
+    #main-menu-status {
+        width: 100%;
+        height: 1;
+        color: $text-muted;
+        margin-top: 1;
+    }
+
+    /* Now Playing screen */
     #now-playing-container {
         width: 100%;
         height: 100%;
-        padding: 2;
+        padding: 1;
         background: $surface;
     }
 
@@ -287,50 +309,70 @@ class RMCApp(App):
         height: auto;
     }
 
+    /* Browse/list screens */
     #search-container, #browse-container, #playlist-container, #artist-container, #album-container {
         width: 100%;
         height: 100%;
-        padding: 1;
+        padding: 0;
     }
 
     #search-header, #browse-header, #playlist-header, #artist-header, #album-header {
+        width: 100%;
+        height: 1;
+        background: $surface-darken-1;
         text-style: bold;
-        height: auto;
     }
 
     #search-status, #browse-status, #playlist-status, #artist-status, #album-status {
-        height: auto;
-        margin-bottom: 1;
+        height: 1;
+        color: $text-muted;
     }
 
     #search-input {
-        margin-bottom: 1;
+        margin: 1 0;
     }
 
     ListView {
         height: 1fr;
     }
 
-    #main-menu-container, #artists-list-container, #albums-list-container {
+    #artists-list-container, #albums-list-container {
         width: 100%;
         height: 100%;
-        padding: 1;
+        padding: 0;
     }
 
-    #main-menu-header, #artists-list-header, #albums-list-header {
+    #artists-list-header, #albums-list-header {
+        width: 100%;
+        height: 1;
+        background: $surface-darken-1;
         text-style: bold;
-        height: auto;
     }
 
     #artists-list-status, #albums-list-status {
-        height: auto;
-        margin-bottom: 1;
+        height: 1;
+        color: $text-muted;
     }
 
-    #main-menu-status {
+    /* Settings screens */
+    #settings-header, #timeout-header {
+        width: 100%;
+        height: 1;
+        background: $surface-darken-1;
+        text-style: bold;
+    }
+
+    #settings-list, #timeout-list {
+        width: 100%;
         height: auto;
-        margin-top: 1;
+        padding: 0;
+    }
+
+    #settings-status {
+        width: 100%;
+        height: 1;
         color: $text-muted;
+        margin-top: 1;
     }
     """
 
@@ -450,10 +492,25 @@ class RMCApp(App):
 
     def action_quit(self) -> None:
         """Quit the application."""
+        import os
+        import threading
+
         self._should_exit = True
+        # Cancel any running workers
+        self.workers.cancel_all()
         if self.library_index:
             self.library_index.close()
-        self.exit()
+
+        # Force exit after brief delay if clean exit doesn't work
+        def force_exit():
+            import time
+            time.sleep(0.5)
+            os._exit(0)
+
+        threading.Thread(target=force_exit, daemon=True).start()
+
+        # Try clean exit first
+        self.exit(return_code=0)
 
     def _check_index_on_launch(self) -> None:
         """Check if index needs to be built or refreshed on launch."""

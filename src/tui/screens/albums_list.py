@@ -13,7 +13,9 @@ class AlbumsListScreen(Screen):
     """Screen for browsing all albums."""
 
     BINDINGS = [
+        ("left", "back", "Back"),
         ("escape", "back", "Back"),
+        ("right", "view_album", "View"),
         ("enter", "view_album", "View"),
     ]
 

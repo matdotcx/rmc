@@ -13,7 +13,9 @@ class PlaylistScreen(Screen):
     """Screen for viewing tracks in a playlist."""
 
     BINDINGS = [
+        ("left", "back", "Back"),
         ("escape", "back", "Back"),
+        ("right", "play_selected", "Play"),
         ("enter", "play_selected", "Play"),
     ]
 

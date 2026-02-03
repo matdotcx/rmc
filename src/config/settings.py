@@ -18,6 +18,7 @@ class UIConfig(BaseModel):
     theme: str = "dark"
     show_album_art: bool = True
     update_interval: float = 1.0  # seconds
+    inactivity_timeout: int = 30  # seconds (0 = disabled, options: 5, 15, 30)
 
 
 class IndexConfig(BaseModel):

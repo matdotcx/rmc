@@ -13,7 +13,9 @@ class ArtistScreen(Screen):
     """Screen for viewing tracks by a specific artist."""
 
     BINDINGS = [
+        ("left", "back", "Back"),
         ("escape", "back", "Back"),
+        ("right", "play_selected", "Play"),
         ("enter", "play_selected", "Play"),
     ]
 
