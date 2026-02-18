@@ -21,11 +21,8 @@ class NowPlayingScreen(Screen):
         ("r", "cycle_repeat", "Repeat"),
         ("+", "volume_up", "Volume Up"),
         ("-", "volume_down", "Volume Down"),
-        ("a", "view_artist", "Artist"),
-        ("l", "view_album", "Album"),
     ]
 
-    # Reactive attributes
     track_name = reactive("No track playing")
     track_artist = reactive("")
     track_album = reactive("")
@@ -37,57 +34,61 @@ class NowPlayingScreen(Screen):
     repeat_mode = reactive("off")
 
     def compose(self) -> ComposeResult:
-        """Create child widgets."""
         with Container(id="now-playing-container"):
             yield Static(id="now-playing-display", classes="now-playing-display")
 
     def on_mount(self) -> None:
-        """Set up the screen when mounted."""
+        self._fetch_status()
         self.update_display()
 
+    def _fetch_status(self) -> None:
+        """Immediately fetch status from the daemon."""
+        try:
+            status = self.app.music_controller.get_status()
+            if status:
+                self.update_track_info(status.get('track'))
+                self.player_state = status.get('state', 'stopped')
+                self.volume = status.get('volume', 50)
+                self.shuffle = status.get('shuffle', False)
+                self.repeat_mode = status.get('repeat', 'off')
+        except Exception:
+            pass
+
     def watch_track_name(self, new_value: str) -> None:
-        """React to track name changes."""
         self.update_display()
 
     def watch_track_artist(self, new_value: str) -> None:
-        """React to track artist changes."""
         self.update_display()
 
     def watch_track_album(self, new_value: str) -> None:
-        """React to track album changes."""
         self.update_display()
 
     def watch_track_position(self, new_value: float) -> None:
-        """React to track position changes."""
         self.update_display()
 
     def watch_track_duration(self, new_value: float) -> None:
-        """React to track duration changes."""
         self.update_display()
 
     def watch_player_state(self, new_value: str) -> None:
-        """React to player state changes."""
         self.update_display()
 
     def watch_volume(self, new_value: int) -> None:
-        """React to volume changes."""
         self.update_display()
 
     def watch_shuffle(self, new_value: bool) -> None:
-        """React to shuffle changes."""
         self.update_display()
 
     def watch_repeat_mode(self, new_value: str) -> None:
-        """React to repeat mode changes."""
         self.update_display()
 
     def update_display(self) -> None:
-        """Update all display elements."""
-        display_widget = self.query_one("#now-playing-display", Static)
+        try:
+            display_widget = self.query_one("#now-playing-display", Static)
+        except Exception:
+            return
         display_widget.update(self._format_display())
 
     def _format_display(self) -> str:
-        """Format the entire display as simple text."""
         lines = []
         lines.append("")
         lines.append(f"  ⎿  State: {self.player_state}")
@@ -105,8 +106,8 @@ class NowPlayingScreen(Screen):
             lines.append(f"     Time: {position} / {duration}")
 
         lines.append("")
+        lines.append(f"     Volume: {self.volume}%")
 
-        # Add playback modes on one line
         modes = []
         if self.shuffle:
             modes.append("shuffle: on")
@@ -114,23 +115,17 @@ class NowPlayingScreen(Screen):
             modes.append(f"repeat: {self.repeat_mode}")
         if modes:
             lines.append(f"     {' | '.join(modes)}")
-            lines.append("")
 
+        lines.append("")
         return "\n".join(lines)
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
-        """Format duration in seconds to MM:SS."""
         minutes = int(seconds // 60)
         secs = int(seconds % 60)
         return f"{minutes:02d}:{secs:02d}"
 
     def update_track_info(self, track_info: Optional[Dict[str, Any]]) -> None:
-        """Update track information.
-
-        Args:
-            track_info: Dictionary with track details or None
-        """
         if track_info is None:
             self.track_name = "No track playing"
             self.track_artist = ""
@@ -145,45 +140,25 @@ class NowPlayingScreen(Screen):
             self.track_duration = track_info.get('duration', 0.0)
 
     def action_playpause(self) -> None:
-        """Handle play/pause action."""
         self.app.music_controller.playpause()
 
     def action_next_track(self) -> None:
-        """Handle next track action."""
         self.app.music_controller.next_track()
 
     def action_previous_track(self) -> None:
-        """Handle previous track action."""
         self.app.music_controller.previous_track()
 
     def action_toggle_shuffle(self) -> None:
-        """Handle shuffle toggle action."""
         self.app.music_controller.toggle_shuffle()
 
     def action_cycle_repeat(self) -> None:
-        """Handle repeat mode cycle action."""
         self.app.music_controller.cycle_repeat()
 
     def action_volume_up(self) -> None:
-        """Handle volume up action."""
         self.app.music_controller.volume_up()
 
     def action_volume_down(self) -> None:
-        """Handle volume down action."""
         self.app.music_controller.volume_down()
 
-    def action_view_artist(self) -> None:
-        """View all tracks by the current artist."""
-        if self.track_artist and self.track_artist != "Unknown Artist":
-            from src.tui.screens.artist import ArtistScreen
-            self.app.push_screen(ArtistScreen(self.track_artist))
-
-    def action_view_album(self) -> None:
-        """View all tracks in the current album."""
-        if self.track_album and self.track_album != "Unknown Album":
-            from src.tui.screens.album import AlbumScreen
-            self.app.push_screen(AlbumScreen(self.track_album, self.track_artist))
-
     def action_back(self) -> None:
-        """Go back to previous screen."""
         self.app.pop_screen()

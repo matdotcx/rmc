@@ -428,10 +428,18 @@ class LibraryIndex:
         conn = self._ensure_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            INSERT OR REPLACE INTO tracks (name, artist, album, duration, persistent_id)
-            VALUES (?, ?, ?, ?, ?)
-        """, (name, artist or '', album or '', duration, persistent_id or ''))
+        # Use None for empty persistent_id so UNIQUE constraint allows multiple NULLs
+        pid = persistent_id if persistent_id else None
+        if pid:
+            cursor.execute("""
+                INSERT OR REPLACE INTO tracks (name, artist, album, duration, persistent_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (name, artist or '', album or '', duration, pid))
+        else:
+            cursor.execute("""
+                INSERT INTO tracks (name, artist, album, duration, persistent_id)
+                VALUES (?, ?, ?, ?, NULL)
+            """, (name, artist or '', album or '', duration))
 
         track_id = cursor.lastrowid
         conn.commit()

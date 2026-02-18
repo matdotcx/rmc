@@ -36,12 +36,20 @@ class APIConfig(BaseModel):
     music_user_token: Optional[str] = None
 
 
+class DaemonConfig(BaseModel):
+    """rmcd daemon connection configuration."""
+    host: str = "127.0.0.1"
+    port: int = 18895
+    enabled: bool = True
+
+
 class AppConfig(BaseModel):
     """Main application configuration."""
     developer: AppleDeveloperConfig = Field(default_factory=AppleDeveloperConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     api: APIConfig = Field(default_factory=APIConfig)
     index: IndexConfig = Field(default_factory=IndexConfig)
+    daemon: DaemonConfig = Field(default_factory=DaemonConfig)
 
 
 class ConfigManager:

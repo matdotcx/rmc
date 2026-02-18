@@ -14,9 +14,7 @@ class MenuItem(Static):
     }
 
     MenuItem.selected {
-        background: $primary;
-        color: $text;
-        text-style: bold;
+        text-style: bold reverse;
     }
     """
 
@@ -46,6 +44,13 @@ class MenuItem(Static):
         self.indicator = indicator
         self.display_width = width
         self._scroll_timer = None
+
+    def update_content(self, label: str, has_chevron: bool, indicator: str) -> None:
+        """Update the menu item content in-place."""
+        self.label = label
+        self.has_chevron = has_chevron
+        self.indicator = indicator
+        self.refresh()
 
     def on_mount(self) -> None:
         """Start scroll timer if text is too long."""
