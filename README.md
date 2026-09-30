@@ -70,7 +70,13 @@ Config stored in `~/.config/rmc/config.json`:
 `scripts/start-daemon.sh` so the settings above are applied. Changing the
 receiver in Settings restarts it automatically.
 
+The daemon is signed with a local self-signed certificate (created once by
+`make -C daemon cert`, which `install.sh` runs) so macOS keeps its Apple Music
+and Automation permissions across rebuilds. Over SSH, unlock the login
+keychain first: `security unlock-keychain ~/Library/Keychains/login.keychain-db`.
+
 ```bash
+make -C daemon cert         # one-off: create the signing identity
 make -C daemon install      # build, sign, install and start
 launchctl kickstart -k gui/$(id -u)/org.iaconelli.rmcd   # restart
 make -C daemon uninstall    # stop and remove

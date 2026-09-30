@@ -24,7 +24,12 @@ mkdir -p "$HOME/.config/rmc"
 echo "✓ Config directory created"
 echo ""
 
-# 3-4. Build, sign and install the daemon LaunchAgent
+# 3. Stable signing identity, so permissions survive daemon rebuilds
+echo "🔏 Creating local code-signing identity..."
+make -C daemon cert
+echo ""
+
+# 4. Build, sign and install the daemon LaunchAgent
 echo "🔨 Building rmcd daemon and installing LaunchAgent..."
 make -C daemon install
 echo "✓ Daemon built, signed and started"
