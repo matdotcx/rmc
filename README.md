@@ -22,8 +22,15 @@ A terminal-based remote control for Apple Music on macOS. Control playback, brow
 ```bash
 git clone https://github.com/matdotcx/rmc.git
 cd rmc
-pip install -e .
+./install.sh
 ```
+
+This will:
+- Install the Python package
+- Build and sign the rmcd daemon
+- Install the LaunchAgent (auto-start on login)
+- Configure PATH
+- Authorize MusicKit
 
 ## Usage
 

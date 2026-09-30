@@ -15,16 +15,23 @@ struct RMCDaemon: AsyncParsableCommand {
     @Option(name: .long, help: "Host to bind to")
     var host: String = "127.0.0.1"
 
+    @Option(name: .long, help: "Marantz receiver hostname (optional)")
+    var receiverHost: String?
+
     func run() async throws {
         let startTime = Date()
         let controller = MusicController()
         let library = MusicKitLibrary()
         let authManager = AuthorizationManager()
+        let receiverController: MarantzReceiverController? = receiverHost.map {
+            MarantzReceiverController(hostname: $0)
+        }
 
         let router = buildRouter(
             controller: controller,
             library: library,
             authManager: authManager,
+            receiverController: receiverController,
             startTime: startTime
         )
         let app = Application(router: router, configuration: .init(address: .hostname(host, port: port)))

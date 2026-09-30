@@ -5,6 +5,7 @@ func buildRouter(
     controller: MusicController,
     library: MusicKitLibrary,
     authManager: AuthorizationManager,
+    receiverController: MarantzReceiverController?,
     startTime: Date
 ) -> Router<BasicRequestContext> {
     let router = Router()
@@ -111,7 +112,15 @@ func buildRouter(
     api.put("settings/volume") { request, context -> Response in
         do {
             let body = try await decodeJSON(VolumeRequest.self, from: request, context: context)
+
+            // Set Music.app volume (always)
             try await controller.setVolume(body.level)
+
+            // Set receiver volume (if configured) - errors shown to user
+            if let receiver = receiverController {
+                try await receiver.setVolume(body.level)
+            }
+
             return try encodeJSON(OKResponse())
         } catch {
             return try errorResponse(error, status: .badRequest)

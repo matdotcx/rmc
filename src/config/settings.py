@@ -41,6 +41,7 @@ class DaemonConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 18895
     enabled: bool = True
+    receiver_host: Optional[str] = "marantz"  # Marantz receiver hostname
 
 
 class AppConfig(BaseModel):
