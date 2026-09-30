@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>cx.mat.rmcd</string>
+	<string>org.iaconelli.rmcd</string>
 	<key>CFBundleName</key>
 	<string>rmcd</string>
 	<key>CFBundleExecutable</key>
