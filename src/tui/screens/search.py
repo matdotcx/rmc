@@ -151,9 +151,7 @@ class SearchScreen(Screen):
     def action_select_item(self) -> None:
         if self._items and 0 <= self.selected_index < len(self._items):
             item = self._items[self.selected_index]
-            self.app.music_controller.play_track(
-                item.get("name", ""), item.get("artist", "")
-            )
+            self.app.music_controller.play_track_in_album(item)
             from src.tui.screens.now_playing import NowPlayingScreen
             self.app.push_screen(NowPlayingScreen())
 

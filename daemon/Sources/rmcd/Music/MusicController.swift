@@ -55,6 +55,7 @@ actor MusicController {
     private var _cachedAlbum: String = ""
     private var _cachedDuration: Double = 0
     private var _cachedAlbumArtist: String = ""
+    private var _cachedID: String?
 
     func getCurrentTrack() async -> TrackInfo? {
         let status = player.state.playbackStatus
@@ -70,33 +71,27 @@ actor MusicController {
         if entry.id == _cachedEntryID {
             return TrackInfo(
                 name: _cachedName, artist: _cachedArtist, album: _cachedAlbum,
-                duration: _cachedDuration, position: position, albumArtist: _cachedAlbumArtist
+                duration: _cachedDuration, position: position, albumArtist: _cachedAlbumArtist,
+                id: _cachedID
             )
         }
 
-        // New entry — resolve full metadata from library
-        let title = entry.title
-        let subtitle = entry.subtitle ?? ""
-
-        var name = title
-        var artist = subtitle
+        // New entry — take metadata from the queued song itself rather than
+        // re-querying the library by title, which can pick a different copy.
+        var name = entry.title
+        var artist = entry.subtitle ?? ""
         var album = ""
         var duration: Double = 0
-        var albumArtist = subtitle
+        var id: String? = nil
 
-        var request = MusicLibraryRequest<Song>()
-        request.filter(matching: \.title, equalTo: title)
-        if !subtitle.isEmpty {
-            request.filter(matching: \.artistName, equalTo: subtitle)
-        }
-        if let response = try? await request.response(),
-           let song = response.items.first {
+        if case .song(let song)? = entry.item {
             name = song.title
             artist = song.artistName
             album = song.albumTitle ?? ""
             duration = song.duration ?? 0
-            albumArtist = song.artistName
+            id = song.id.rawValue
         }
+        let albumArtist = artist
 
         _cachedEntryID = entry.id
         _cachedName = name
@@ -104,10 +99,11 @@ actor MusicController {
         _cachedAlbum = album
         _cachedDuration = duration
         _cachedAlbumArtist = albumArtist
+        _cachedID = id
 
         return TrackInfo(
             name: name, artist: artist, album: album,
-            duration: duration, position: position, albumArtist: albumArtist
+            duration: duration, position: position, albumArtist: albumArtist, id: id
         )
     }
 
@@ -156,69 +152,46 @@ actor MusicController {
         player.playbackTime = position
     }
 
-    // MARK: - Play Track (MusicKit queue)
+    // MARK: - Play Queue (MusicKit queue)
 
-    func playTrack(name: String, artist: String?) async throws {
-        var request = MusicLibraryRequest<Song>()
-        request.filter(matching: \.title, equalTo: name)
-        if let artist, !artist.isEmpty, artist != "Unknown Artist" {
-            request.filter(matching: \.artistName, equalTo: artist)
+    /// Queue the given library songs in order and start playing at `start`.
+    /// Songs are looked up by MusicKit ID so the exact copy chosen in the UI
+    /// is played, even when the library holds several with the same title.
+    func playQueue(ids: [String], start: Int) async throws {
+        guard ids.indices.contains(start) else {
+            throw MusicControllerError.trackNotFound("Start index \(start) out of range")
         }
+
+        var request = MusicLibraryRequest<Song>()
+        request.filter(matching: \.id, memberOf: ids.map { MusicItemID($0) })
         let response = try await request.response()
 
-        if let song = response.items.first {
-            try await playWithAlbumContext(song)
-            return
+        var byID: [String: Song] = [:]
+        for song in response.items { byID[song.id.rawValue] = song }
+
+        guard let startSong = byID[ids[start]] else {
+            throw MusicControllerError.trackNotFound("Track not found in library (try reindexing)")
         }
+        let songs = ids.compactMap { byID[$0] }
 
-        // Fallback: name-only search if artist filter excluded results
-        if artist != nil {
-            var fallback = MusicLibraryRequest<Song>()
-            fallback.filter(matching: \.title, equalTo: name)
-            let fallbackResponse = try await fallback.response()
-            if let song = fallbackResponse.items.first {
-                try await playWithAlbumContext(song)
-                return
-            }
-        }
-
-        throw MusicControllerError.trackNotFound("Track '\(name)' not found")
-    }
-
-    /// Queue the song within its album so next/prev and auto-advance work.
-    private func playWithAlbumContext(_ song: Song) async throws {
-        if let albumTitle = song.albumTitle {
-            var albumRequest = MusicLibraryRequest<Song>()
-            albumRequest.filter(matching: \.albumTitle, equalTo: albumTitle)
-            albumRequest.filter(matching: \.artistName, equalTo: song.artistName)
-            albumRequest.sort(by: \.trackNumber, ascending: true)
-            let albumResponse = try await albumRequest.response()
-
-            if albumResponse.items.count > 1 {
-                player.queue = ApplicationMusicPlayer.Queue(for: albumResponse.items, startingAt: song)
-                try await player.play()
-                return
-            }
-        }
-
-        player.queue = ApplicationMusicPlayer.Queue(for: [song])
+        player.queue = ApplicationMusicPlayer.Queue(for: songs, startingAt: startSong)
         try await player.play()
     }
 
     // MARK: - Play Playlist (MusicKit queue)
 
-    func playPlaylist(name: String) async throws {
+    func playPlaylist(id: String) async throws {
         var request = MusicLibraryRequest<Playlist>()
-        request.filter(matching: \.name, equalTo: name)
+        request.filter(matching: \.id, equalTo: MusicItemID(id))
         let response = try await request.response()
 
         guard let playlist = response.items.first else {
-            throw MusicControllerError.trackNotFound("Playlist '\(name)' not found")
+            throw MusicControllerError.trackNotFound("Playlist not found (try reindexing)")
         }
 
         let detailed = try await playlist.with(.tracks)
         guard let tracks = detailed.tracks, !tracks.isEmpty else {
-            throw MusicControllerError.trackNotFound("Playlist '\(name)' has no tracks")
+            throw MusicControllerError.trackNotFound("Playlist '\(playlist.name)' has no tracks")
         }
 
         player.queue = ApplicationMusicPlayer.Queue(for: tracks)

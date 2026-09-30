@@ -1,12 +1,25 @@
 """SQLite index manager with FTS5 full-text search for Music.app library."""
 
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
+
+# Tables and triggers owned by this schema, dropped when migrating from an
+# older schema version (the index is a cache, so rebuilding is always safe).
+_SCHEMA_OBJECTS = [
+    ("TRIGGER", "tracks_ai"), ("TRIGGER", "tracks_ad"), ("TRIGGER", "tracks_au"),
+    ("TABLE", "tracks_fts"), ("TABLE", "playlist_tracks"), ("TABLE", "playlists"),
+    ("TABLE", "albums"), ("TABLE", "artists"), ("TABLE", "tracks"), ("TABLE", "metadata"),
+]
+
+_TRACK_COLUMNS = (
+    "id, name, artist, album_artist, album, track_number, disc_number, duration, music_id"
+)
 
 
 class LibraryIndex:
@@ -24,37 +37,78 @@ class LibraryIndex:
             db_path = config_dir / "library.db"
 
         self.db_path = db_path
-        self._conn: Optional[sqlite3.Connection] = None
+        # One connection per thread. A sqlite3 connection must never be used
+        # from two threads at once (the TUI reads on the main thread while a
+        # worker thread reindexes), so each thread gets its own connection and
+        # WAL mode lets readers proceed while a writer is mid-transaction.
+        self._local = threading.local()
+        self._connections: List[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
         self._ensure_connection()
         self.create_schema()
 
     def _ensure_connection(self) -> sqlite3.Connection:
-        """Ensure database connection is open."""
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
+        """Return this thread's database connection, opening it if needed."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            self._local.conn = conn
+            self._local.in_bulk = False
+            with self._connections_lock:
+                self._connections.append(conn)
+        return conn
+
+    @property
+    def _conn(self) -> Optional[sqlite3.Connection]:
+        return getattr(self._local, "conn", None)
+
+    def _commit(self, conn: sqlite3.Connection) -> None:
+        """Commit unless this thread is inside a bulk transaction."""
+        if not getattr(self._local, "in_bulk", False):
+            conn.commit()
 
     def close(self) -> None:
-        """Close the database connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        """Close every database connection opened by this index."""
+        with self._connections_lock:
+            conns, self._connections = self._connections, []
+        for conn in conns:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+        self._local.conn = None
+        self._local.in_bulk = False
+
+    def _needs_migration(self, cursor: sqlite3.Cursor) -> bool:
+        """True if an older schema is on disk (tracks lacks the v2 columns)."""
+        cursor.execute("PRAGMA table_info(tracks)")
+        columns = {row["name"] for row in cursor.fetchall()}
+        return bool(columns) and "music_id" not in columns
 
     def create_schema(self) -> None:
         """Create database tables and FTS5 virtual table."""
         conn = self._ensure_connection()
         cursor = conn.cursor()
 
-        # Tracks table
+        if self._needs_migration(cursor):
+            for kind, name in _SCHEMA_OBJECTS:
+                cursor.execute(f"DROP {kind} IF EXISTS {name}")
+
+        # Tracks table. music_id is the MusicKit library ID used for playback.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tracks (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 artist TEXT,
-                album TEXT,
+                album_artist TEXT COLLATE NOCASE,
+                album TEXT COLLATE NOCASE,
+                track_number INTEGER,
+                disc_number INTEGER,
                 duration REAL,
-                persistent_id TEXT UNIQUE
+                music_id TEXT UNIQUE
             )
         """)
 
@@ -91,20 +145,21 @@ class LibraryIndex:
             END
         """)
 
-        # Artists table
+        # Artists table (album artists). NOCASE merges spellings such as
+        # "Florence + The Machine" / "Florence + the Machine"; first one wins.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS artists (
                 id INTEGER PRIMARY KEY,
-                name TEXT UNIQUE NOT NULL
+                name TEXT UNIQUE NOT NULL COLLATE NOCASE
             )
         """)
 
-        # Albums table
+        # Albums table, keyed by album artist
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS albums (
                 id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                artist TEXT,
+                name TEXT NOT NULL COLLATE NOCASE,
+                artist TEXT COLLATE NOCASE,
                 UNIQUE(name, artist)
             )
         """)
@@ -113,7 +168,8 @@ class LibraryIndex:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS playlists (
                 id INTEGER PRIMARY KEY,
-                name TEXT UNIQUE NOT NULL
+                name TEXT NOT NULL,
+                music_id TEXT UNIQUE
             )
         """)
 
@@ -125,7 +181,7 @@ class LibraryIndex:
                 position INTEGER,
                 FOREIGN KEY (playlist_id) REFERENCES playlists(id),
                 FOREIGN KEY (track_id) REFERENCES tracks(id),
-                PRIMARY KEY (playlist_id, track_id)
+                PRIMARY KEY (playlist_id, position)
             )
         """)
 
@@ -138,11 +194,11 @@ class LibraryIndex:
         """)
 
         # Create indexes for common queries
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album_artist ON tracks(album_artist)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album, album_artist)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_albums_artist ON albums(artist)")
 
-        conn.commit()
+        self._commit(conn)
 
     def get_metadata(self) -> Dict[str, Any]:
         """Return index metadata.
@@ -183,7 +239,7 @@ class LibraryIndex:
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             (key, value)
         )
-        conn.commit()
+        self._commit(conn)
 
     def search(self, query: str, limit: int = 100) -> List[Dict[str, Any]]:
         """FTS5 search across name, artist, album.
@@ -204,7 +260,8 @@ class LibraryIndex:
         fts_query = f'"{safe_query}"*'
 
         cursor.execute("""
-            SELECT t.id, t.name, t.artist, t.album, t.duration, t.persistent_id
+            SELECT t.id, t.name, t.artist, t.album_artist, t.album, t.track_number,
+                   t.disc_number, t.duration, t.music_id
             FROM tracks t
             JOIN tracks_fts fts ON t.id = fts.rowid
             WHERE tracks_fts MATCH ?
@@ -215,10 +272,10 @@ class LibraryIndex:
         return [dict(row) for row in cursor.fetchall()]
 
     def get_all_artists(self) -> List[str]:
-        """Return sorted unique artists.
+        """Return sorted unique album artists.
 
         Returns:
-            List of artist names sorted alphabetically
+            List of album artist names sorted alphabetically
         """
         conn = self._ensure_connection()
         cursor = conn.cursor()
@@ -241,23 +298,42 @@ class LibraryIndex:
         """)
         return [(row['name'], row['artist'] or '') for row in cursor.fetchall()]
 
-    def get_all_playlists(self) -> List[str]:
-        """Return playlist names.
+    def get_albums_by_artist(self, artist: str) -> List[Tuple[str, str]]:
+        """Return (album, album_artist) tuples for one album artist.
+
+        Args:
+            artist: Album artist name (case-insensitive)
 
         Returns:
-            List of playlist names
+            List of (album_name, artist_name) tuples sorted by album name
         """
         conn = self._ensure_connection()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT name FROM playlists ORDER BY name COLLATE NOCASE")
-        return [row['name'] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT name, artist FROM albums
+            WHERE artist = ?
+            ORDER BY name COLLATE NOCASE
+        """, (artist,))
+        return [(row['name'], row['artist'] or '') for row in cursor.fetchall()]
 
-    def get_playlist_tracks(self, name: str) -> List[Dict[str, Any]]:
+    def get_all_playlists(self) -> List[Dict[str, Any]]:
+        """Return playlists.
+
+        Returns:
+            List of {"name", "music_id"} dictionaries sorted by name
+        """
+        conn = self._ensure_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT name, music_id FROM playlists ORDER BY name COLLATE NOCASE")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_playlist_tracks(self, music_id: str) -> List[Dict[str, Any]]:
         """Return tracks in playlist order.
 
         Args:
-            name: Playlist name
+            music_id: Playlist MusicKit ID
 
         Returns:
             List of track dictionaries in playlist order
@@ -266,21 +342,22 @@ class LibraryIndex:
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT t.id, t.name, t.artist, t.album, t.duration, t.persistent_id
+            SELECT t.id, t.name, t.artist, t.album_artist, t.album, t.track_number,
+                   t.disc_number, t.duration, t.music_id
             FROM tracks t
             JOIN playlist_tracks pt ON t.id = pt.track_id
             JOIN playlists p ON pt.playlist_id = p.id
-            WHERE p.name = ?
+            WHERE p.music_id = ?
             ORDER BY pt.position
-        """, (name,))
+        """, (music_id,))
 
         return [dict(row) for row in cursor.fetchall()]
 
     def get_tracks_by_artist(self, artist: str) -> List[Dict[str, Any]]:
-        """Return tracks by artist.
+        """Return tracks by album artist, in album then track order.
 
         Args:
-            artist: Artist name
+            artist: Album artist name (case-insensitive)
 
         Returns:
             List of track dictionaries
@@ -288,21 +365,21 @@ class LibraryIndex:
         conn = self._ensure_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT id, name, artist, album, duration, persistent_id
+        cursor.execute(f"""
+            SELECT {_TRACK_COLUMNS}
             FROM tracks
-            WHERE artist = ?
-            ORDER BY album COLLATE NOCASE, name COLLATE NOCASE
+            WHERE album_artist = ?
+            ORDER BY album, disc_number, track_number, name COLLATE NOCASE
         """, (artist,))
 
         return [dict(row) for row in cursor.fetchall()]
 
     def get_tracks_by_album(self, album: str, artist: str = "") -> List[Dict[str, Any]]:
-        """Return tracks in album.
+        """Return tracks in album, in disc and track order.
 
         Args:
             album: Album name
-            artist: Artist name (optional for better matching)
+            artist: Album artist (optional; case-insensitive)
 
         Returns:
             List of track dictionaries
@@ -310,20 +387,14 @@ class LibraryIndex:
         conn = self._ensure_connection()
         cursor = conn.cursor()
 
-        if artist:
-            cursor.execute("""
-                SELECT id, name, artist, album, duration, persistent_id
-                FROM tracks
-                WHERE album = ? AND artist = ?
-                ORDER BY name COLLATE NOCASE
-            """, (album, artist))
-        else:
-            cursor.execute("""
-                SELECT id, name, artist, album, duration, persistent_id
-                FROM tracks
-                WHERE album = ?
-                ORDER BY name COLLATE NOCASE
-            """, (album,))
+        where = "album = ? AND album_artist = ?" if artist else "album = ?"
+        params = (album, artist) if artist else (album,)
+        cursor.execute(f"""
+            SELECT {_TRACK_COLUMNS}
+            FROM tracks
+            WHERE {where}
+            ORDER BY disc_number, track_number, name COLLATE NOCASE
+        """, params)
 
         return [dict(row) for row in cursor.fetchall()]
 
@@ -339,7 +410,7 @@ class LibraryIndex:
         metadata = self.get_metadata()
         last_updated = metadata.get('last_updated')
 
-        if not last_updated:
+        if not last_updated or metadata.get('version') != SCHEMA_VERSION:
             return True
 
         try:
@@ -403,7 +474,7 @@ class LibraryIndex:
         # Rebuild FTS index
         cursor.execute("INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild')")
 
-        conn.commit()
+        self._commit(conn)
 
     def add_track(
         self,
@@ -411,16 +482,22 @@ class LibraryIndex:
         artist: str = "",
         album: str = "",
         duration: float = 0.0,
-        persistent_id: str = ""
+        music_id: str = "",
+        album_artist: str = "",
+        track_number: Optional[int] = None,
+        disc_number: Optional[int] = None,
     ) -> int:
-        """Add a track to the index.
+        """Add a track to the index, or return the existing row for music_id.
 
         Args:
             name: Track name
-            artist: Artist name
+            artist: Track artist
             album: Album name
             duration: Track duration in seconds
-            persistent_id: Music.app persistent ID
+            music_id: MusicKit library ID
+            album_artist: Album artist (defaults to artist)
+            track_number: Track number on disc
+            disc_number: Disc number
 
         Returns:
             Track ID
@@ -428,21 +505,25 @@ class LibraryIndex:
         conn = self._ensure_connection()
         cursor = conn.cursor()
 
-        # Use None for empty persistent_id so UNIQUE constraint allows multiple NULLs
-        pid = persistent_id if persistent_id else None
-        if pid:
-            cursor.execute("""
-                INSERT OR REPLACE INTO tracks (name, artist, album, duration, persistent_id)
-                VALUES (?, ?, ?, ?, ?)
-            """, (name, artist or '', album or '', duration, pid))
-        else:
-            cursor.execute("""
-                INSERT INTO tracks (name, artist, album, duration, persistent_id)
-                VALUES (?, ?, ?, ?, NULL)
-            """, (name, artist or '', album or '', duration))
+        # Playlist exports repeat library tracks; reuse the existing row so
+        # each song appears once and playlist rows point at the same track.
+        if music_id:
+            cursor.execute("SELECT id FROM tracks WHERE music_id = ?", (music_id,))
+            row = cursor.fetchone()
+            if row:
+                return row['id']
+
+        cursor.execute("""
+            INSERT INTO tracks (name, artist, album_artist, album, track_number,
+                                disc_number, duration, music_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            name, artist or '', album_artist or artist or '', album or '',
+            track_number, disc_number, duration, music_id or None,
+        ))
 
         track_id = cursor.lastrowid
-        conn.commit()
+        self._commit(conn)
         return track_id
 
     def add_artist(self, name: str) -> int:
@@ -461,7 +542,7 @@ class LibraryIndex:
             "INSERT OR IGNORE INTO artists (name) VALUES (?)",
             (name,)
         )
-        conn.commit()
+        self._commit(conn)
 
         cursor.execute("SELECT id FROM artists WHERE name = ?", (name,))
         row = cursor.fetchone()
@@ -484,7 +565,7 @@ class LibraryIndex:
             "INSERT OR IGNORE INTO albums (name, artist) VALUES (?, ?)",
             (name, artist or '')
         )
-        conn.commit()
+        self._commit(conn)
 
         cursor.execute(
             "SELECT id FROM albums WHERE name = ? AND artist = ?",
@@ -493,11 +574,57 @@ class LibraryIndex:
         row = cursor.fetchone()
         return row['id'] if row else 0
 
-    def add_playlist(self, name: str) -> int:
+    def group_untagged_compilations(self, min_artists: int = 3) -> int:
+        """File untagged compilations under "Various Artists".
+
+        Albums with no album-artist tag come back with each track's own
+        artist, scattering a compilation across dozens of artists. Treat an
+        album title as a compilation when it spans several artists with about
+        one track each; different artists' albums that merely share a title
+        ("Greatest Hits") have many tracks per artist and are left alone.
+
+        Returns:
+            Number of tracks regrouped
+        """
+        conn = self._ensure_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT album FROM tracks
+            WHERE album != ''
+            GROUP BY album
+            HAVING COUNT(DISTINCT album_artist) >= ?
+               AND COUNT(*) < 2 * COUNT(DISTINCT album_artist)
+        """, (min_artists,))
+        albums = [row['album'] for row in cursor.fetchall()]
+
+        regrouped = 0
+        for album in albums:
+            cursor.execute(
+                "UPDATE tracks SET album_artist = 'Various Artists' WHERE album = ?", (album,)
+            )
+            regrouped += cursor.rowcount
+            cursor.execute("DELETE FROM albums WHERE name = ?", (album,))
+            cursor.execute(
+                "INSERT OR IGNORE INTO albums (name, artist) VALUES (?, 'Various Artists')", (album,)
+            )
+        if albums:
+            cursor.execute("INSERT OR IGNORE INTO artists (name) VALUES ('Various Artists')")
+            # Drop artists left with no albums or tracks after regrouping.
+            cursor.execute("""
+                DELETE FROM artists
+                WHERE name NOT IN (SELECT DISTINCT album_artist FROM tracks)
+            """)
+
+        self._commit(conn)
+        return regrouped
+
+    def add_playlist(self, name: str, music_id: str = "") -> int:
         """Add a playlist to the index.
 
         Args:
             name: Playlist name
+            music_id: Playlist MusicKit ID
 
         Returns:
             Playlist ID
@@ -506,14 +633,12 @@ class LibraryIndex:
         cursor = conn.cursor()
 
         cursor.execute(
-            "INSERT OR IGNORE INTO playlists (name) VALUES (?)",
-            (name,)
+            "INSERT INTO playlists (name, music_id) VALUES (?, ?)",
+            (name, music_id or None)
         )
-        conn.commit()
-
-        cursor.execute("SELECT id FROM playlists WHERE name = ?", (name,))
-        row = cursor.fetchone()
-        return row['id'] if row else 0
+        playlist_id = cursor.lastrowid
+        self._commit(conn)
+        return playlist_id
 
     def add_playlist_track(self, playlist_id: int, track_id: int, position: int) -> None:
         """Add a track to a playlist.
@@ -531,19 +656,33 @@ class LibraryIndex:
             VALUES (?, ?, ?)
         """, (playlist_id, track_id, position))
 
-        conn.commit()
+        self._commit(conn)
 
     def commit(self) -> None:
         """Commit any pending changes."""
-        if self._conn:
-            self._conn.commit()
+        conn = self._ensure_connection()
+        self._commit(conn)
 
     def begin_transaction(self) -> None:
-        """Begin a transaction for bulk operations."""
+        """Begin a bulk transaction on this thread.
+
+        Until end_transaction() is called, the per-operation commits in
+        add_track() and friends are suppressed, so the whole rebuild lands
+        atomically and readers on other threads keep seeing the old data.
+        """
         conn = self._ensure_connection()
-        conn.execute("BEGIN TRANSACTION")
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        self._local.in_bulk = True
 
     def end_transaction(self) -> None:
-        """End a transaction."""
-        if self._conn:
-            self._conn.commit()
+        """Commit the bulk transaction started by begin_transaction()."""
+        conn = self._ensure_connection()
+        self._local.in_bulk = False
+        conn.commit()
+
+    def rollback_transaction(self) -> None:
+        """Abandon the bulk transaction, restoring the previous index contents."""
+        conn = self._ensure_connection()
+        self._local.in_bulk = False
+        conn.rollback()

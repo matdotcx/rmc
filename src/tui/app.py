@@ -6,7 +6,7 @@ from textual.theme import Theme
 from textual import work
 
 from src.music.rmcd_bridge import RMCDBridge, RMCDConnectionError, RMCDError
-from src.index.library_index import LibraryIndex
+from src.index.library_index import LibraryIndex, SCHEMA_VERSION
 from src.tui.screens.now_playing import NowPlayingScreen
 from src.config.settings import ConfigManager
 
@@ -69,22 +69,41 @@ class MusicController:
         result = self._call(self._bridge.get_status)
         return result if result is not None else {}
 
-    def play_track(self, name: str, artist: str = "") -> None:
-        self._call(self._bridge.play_track, name, artist)
+    def play_tracks(self, tracks: list, start: int = 0) -> None:
+        """Queue tracks (index rows) and start playing at tracks[start]."""
+        ids = [t.get("music_id") for t in tracks]
+        start_id = ids[start] if 0 <= start < len(ids) else None
+        if not start_id:
+            self.app.notify("Track has no library ID - try reindexing", severity="error")
+            return
+        queue = [i for i in ids if i]
+        self._call(self._bridge.play_queue, queue, queue.index(start_id))
 
-    def play_playlist(self, name: str) -> None:
-        self._call(self._bridge.play_playlist, name)
+    def play_track_in_album(self, track: dict) -> None:
+        """Play a single track with the rest of its album queued around it."""
+        album = self._index.get_tracks_by_album(track.get("album", ""), track.get("album_artist", ""))
+        ids = [t.get("music_id") for t in album]
+        if track.get("music_id") in ids:
+            self.play_tracks(album, ids.index(track["music_id"]))
+        else:
+            self.play_tracks([track])
+
+    def play_playlist(self, music_id: str) -> None:
+        self._call(self._bridge.play_playlist, music_id)
 
     # -- Library reads (local SQLite index) --
 
     def get_playlists(self) -> list:
         return self._index.get_all_playlists()
 
-    def get_playlist_tracks(self, name: str) -> list:
-        return self._index.get_playlist_tracks(name)
+    def get_playlist_tracks(self, music_id: str) -> list:
+        return self._index.get_playlist_tracks(music_id)
 
     def get_all_artists(self) -> list:
         return self._index.get_all_artists()
+
+    def get_albums_by_artist(self, name: str) -> list:
+        return self._index.get_albums_by_artist(name)
 
     def get_tracks_by_artist(self, name: str) -> list:
         return self._index.get_tracks_by_artist(name)
@@ -112,36 +131,52 @@ class MusicController:
 
         from datetime import datetime
 
-        self._index.clear()
-        self._index.begin_transaction()
-
         tracks = data.get("tracks", [])
-        for t in tracks:
-            self._index.add_track(
-                name=t.get("name", ""),
-                artist=t.get("artist", ""),
-                album=t.get("album", ""),
-                duration=t.get("duration", 0),
-            )
-            if t.get("artist"):
-                self._index.add_artist(t["artist"])
-            if t.get("album"):
-                self._index.add_album(t["album"], t.get("artist", ""))
 
-        for pl in data.get("playlists", []):
-            pl_id = self._index.add_playlist(pl["name"])
-            for pos, t in enumerate(pl.get("tracks", [])):
-                track_id = self._index.add_track(
+        # Rebuild inside one transaction so readers on the UI thread keep the
+        # old index until the new one is complete, and a failure mid-way
+        # leaves the previous index intact.
+        self._index.begin_transaction()
+        try:
+            self._index.clear()
+            for t in tracks:
+                album_artist = t.get("album_artist") or t.get("artist") or "Unknown Artist"
+                self._index.add_track(
                     name=t.get("name", ""),
                     artist=t.get("artist", ""),
                     album=t.get("album", ""),
                     duration=t.get("duration", 0),
+                    music_id=t.get("id") or "",
+                    album_artist=album_artist,
+                    track_number=t.get("track_number"),
+                    disc_number=t.get("disc_number"),
                 )
-                self._index.add_playlist_track(pl_id, track_id, pos)
+                self._index.add_artist(album_artist)
+                if t.get("album"):
+                    self._index.add_album(t["album"], album_artist)
 
-        self._index.end_transaction()
-        self._index.set_metadata("last_updated", datetime.now().isoformat())
-        self._index.set_metadata("version", "1")
+            self._index.group_untagged_compilations()
+
+            for pl in data.get("playlists", []):
+                pl_id = self._index.add_playlist(pl["name"], pl.get("id", ""))
+                for pos, t in enumerate(pl.get("tracks", [])):
+                    track_id = self._index.add_track(
+                        name=t.get("name", ""),
+                        artist=t.get("artist", ""),
+                        album=t.get("album", ""),
+                        duration=t.get("duration", 0),
+                        music_id=t.get("id") or "",
+                        track_number=t.get("track_number"),
+                        disc_number=t.get("disc_number"),
+                    )
+                    self._index.add_playlist_track(pl_id, track_id, pos)
+
+            self._index.set_metadata("last_updated", datetime.now().isoformat())
+            self._index.set_metadata("version", SCHEMA_VERSION)
+            self._index.end_transaction()
+        except Exception:
+            self._index.rollback_transaction()
+            raise
 
         return len(tracks)
 
@@ -268,21 +303,33 @@ class RMCApp(App):
         return
         yield  # ComposeResult requires a generator
 
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # Let "q" be typed into a list's jump-to prefix instead of quitting.
+        if action == "quit" and getattr(self.screen, "_jump", None) is not None:
+            return False
+        return True
+
     def on_mount(self) -> None:
         from src.tui.screens.main_menu import MainMenuScreen
         self.push_screen(MainMenuScreen())
         self.start_update_loop()
         self._auto_reindex_if_stale()
 
-    @work(exclusive=False, thread=True)
+    @work(exclusive=False, thread=True, exit_on_error=False)
     def _auto_reindex_if_stale(self) -> None:
         """Reindex library in background if index is empty or stale."""
-        if self.music_controller.index_is_stale():
-            count = self.music_controller.reindex()
-            if count >= 0:
-                self.call_from_thread(
-                    self.notify, f"Library indexed: {count:,} tracks"
-                )
+        try:
+            if self.music_controller.index_is_stale():
+                count = self.music_controller.reindex()
+                if count >= 0:
+                    self.call_from_thread(
+                        self.notify, f"Library indexed: {count:,} tracks"
+                    )
+        except Exception as e:
+            # A failed background reindex should not take the whole app down.
+            self.call_from_thread(
+                self.notify, f"Library reindex failed: {e}", severity="error"
+            )
 
     @work(exclusive=True, thread=True)
     def start_update_loop(self) -> None:

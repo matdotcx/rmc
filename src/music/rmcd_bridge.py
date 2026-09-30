@@ -104,11 +104,12 @@ class RMCDBridge:
     def set_player_position(self, position: float) -> None:
         self._post("/playback/seek", json={"position": position})
 
-    def play_track(self, track_name: str, artist: str = "") -> None:
-        self._post("/playback/play-track", json={"name": track_name, "artist": artist})
+    def play_queue(self, ids: List[str], start: int = 0) -> None:
+        """Queue library songs by MusicKit ID and start playing at ids[start]."""
+        self._post("/playback/play-queue", json={"ids": ids, "start": start})
 
-    def play_playlist(self, name: str) -> None:
-        self._post("/playback/play-playlist", json={"name": name})
+    def play_playlist(self, music_id: str) -> None:
+        self._post("/playback/play-playlist", json={"id": music_id})
 
     # MARK: - Player state (individual getters for compatibility)
 

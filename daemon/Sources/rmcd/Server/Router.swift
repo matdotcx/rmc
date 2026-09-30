@@ -87,10 +87,10 @@ func buildRouter(
         }
     }
 
-    api.post("playback/play-track") { request, context -> Response in
+    api.post("playback/play-queue") { request, context -> Response in
         do {
-            let body = try await decodeJSON(PlayTrackRequest.self, from: request, context: context)
-            try await controller.playTrack(name: body.name, artist: body.artist)
+            let body = try await decodeJSON(PlayQueueRequest.self, from: request, context: context)
+            try await controller.playQueue(ids: body.ids, start: body.start)
             return try encodeJSON(OKResponse())
         } catch {
             return try errorResponse(error, status: .internalServerError)
@@ -100,7 +100,7 @@ func buildRouter(
     api.post("playback/play-playlist") { request, context -> Response in
         do {
             let body = try await decodeJSON(PlayPlaylistRequest.self, from: request, context: context)
-            try await controller.playPlaylist(name: body.name)
+            try await controller.playPlaylist(id: body.id)
             return try encodeJSON(OKResponse())
         } catch {
             return try errorResponse(error, status: .internalServerError)

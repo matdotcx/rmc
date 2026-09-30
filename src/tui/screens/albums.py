@@ -36,11 +36,15 @@ class AlbumScreen(ListScreen):
         ) or []
 
     def format_item(self, item) -> tuple:
-        return (item.get("name", "Unknown"), False, "")
+        name = item.get("name", "Unknown")
+        number = item.get("track_number")
+        label = f"{number:>2}. {name}" if number else name
+        artist = item.get("artist", "")
+        if artist and artist.lower() != (self._artist or "").lower():
+            label = f"{label} - {artist}"
+        return (label, False, "")
 
     def on_item_selected(self, index: int, item) -> None:
-        self.app.music_controller.play_track(
-            item.get("name", ""), item.get("artist", self._artist)
-        )
+        self.app.music_controller.play_tracks(self._items, index)
         from src.tui.screens.now_playing import NowPlayingScreen
         self.app.push_screen(NowPlayingScreen())

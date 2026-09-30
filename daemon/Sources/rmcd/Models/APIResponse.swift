@@ -56,6 +56,7 @@ struct AuthStatusResponse: Codable, Sendable {
 }
 
 struct PlaylistExport: Codable, Sendable {
+    let id: String
     let name: String
     let tracks: [TrackInfo]
 }
@@ -71,13 +72,15 @@ struct SeekRequest: Codable, Sendable {
     let position: Double
 }
 
-struct PlayTrackRequest: Codable, Sendable {
-    let name: String
-    let artist: String?
+struct PlayQueueRequest: Codable, Sendable {
+    /// MusicKit library song IDs, in queue order.
+    let ids: [String]
+    /// Index into `ids` of the track to start playing.
+    let start: Int
 }
 
 struct PlayPlaylistRequest: Codable, Sendable {
-    let name: String
+    let id: String
 }
 
 struct VolumeRequest: Codable, Sendable {
