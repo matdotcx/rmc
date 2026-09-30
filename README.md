@@ -45,6 +45,7 @@ rmc
 | `up/down` or `j/k` | Navigate |
 | `right` or `enter` | Select |
 | `left` or `escape` | Back |
+| `/` | Jump to a name in long lists |
 | `q` | Quit |
 
 ### Playback
@@ -63,6 +64,9 @@ Config stored in `~/.config/rmc/config.json`:
 - Inactivity timeout (auto-return to Now Playing)
 - Update interval
 - Daemon host/port and Marantz receiver hostname (`daemon.receiver_host`)
+- Receiver input (`daemon.receiver_input`, default `MPLAY`): rmc powers the
+  receiver on and switches to this input on launch and when playback starts;
+  set it to `null` to leave the input alone
 
 ### Daemon
 

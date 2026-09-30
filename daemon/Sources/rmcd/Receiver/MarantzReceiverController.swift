@@ -15,7 +15,24 @@ actor MarantzReceiverController {
 
     // MARK: - Connection Management
 
-    private func sendCommand(_ command: String) async throws -> String? {
+    /// Send one command over a fresh connection.
+    ///
+    /// Queries ("MV?") are answered, but set commands only get a reply when
+    /// they change something - setting the volume the receiver is already at
+    /// gets none - so set commands don't wait for one.
+    ///
+    /// A query that times out is retried once: the receiver is sometimes slow
+    /// to accept a connection (from standby, or the daemon's first one). Set
+    /// commands aren't retried, so a step like MVUP is never sent twice.
+    private func sendCommand(_ command: String, expectReply: Bool = true) async throws -> String? {
+        do {
+            return try await sendCommandOnce(command, expectReply: expectReply)
+        } catch MarantzError.timeout where expectReply {
+            return try await sendCommandOnce(command, expectReply: expectReply)
+        }
+    }
+
+    private func sendCommandOnce(_ command: String, expectReply: Bool) async throws -> String? {
         // Rate limiting: wait if last command was too recent
         let now = Date()
         let timeSinceLastCommand = now.timeIntervalSince(lastCommandTime)
@@ -53,6 +70,16 @@ actor MarantzReceiverController {
                             timeoutTask.cancel()
                             connection.cancel()
                             continuation.resume(throwing: MarantzError.connectionFailed(sendError.localizedDescription))
+                            return
+                        }
+
+                        if !expectReply {
+                            if !hasReturned {
+                                hasReturned = true
+                                timeoutTask.cancel()
+                                connection.cancel()
+                                continuation.resume(returning: nil)
+                            }
                             return
                         }
 
@@ -114,23 +141,51 @@ actor MarantzReceiverController {
         }
     }
 
+    // MARK: - Power and Input
+
+    /// Power the main zone on and select `input` (e.g. "MPLAY"), leaving
+    /// alone whatever is already right, so a call when the receiver is on
+    /// and on that input is just two quick queries.
+    func wake(input: String?) async throws {
+        if !Self.reply(try await sendCommand("ZM?"), has: "ZMON") {
+            _ = try await sendCommand("ZMON", expectReply: false)
+            // The receiver ignores commands for a moment while powering up.
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        guard let input, !input.isEmpty else { return }
+        // Just after power-on the receiver ignores input changes (and floods
+        // status lines) for a few seconds, so keep checking until it reports
+        // the input rather than sending the command once.
+        for _ in 0..<6 {
+            if Self.reply(try? await sendCommand("SI?"), has: "SI\(input)") { return }
+            _ = try await sendCommand("SI\(input)", expectReply: false)
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+        }
+        throw MarantzError.invalidResponse("Receiver did not switch to input \(input)")
+    }
+
+    /// Replies can carry several status lines ("SIMPLAY\rSVOFF").
+    private static func reply(_ response: String?, has status: String) -> Bool {
+        (response ?? "").split(whereSeparator: \.isWhitespace).contains { $0 == status }
+    }
+
     // MARK: - Volume Control
 
     /// Set receiver volume (0-100 scale, mapped to Marantz 0-98)
     func setVolume(_ apiLevel: Int) async throws {
         let clamped = max(0, min(100, apiLevel))
         let marantzLevel = Int(Double(clamped) * 0.98)
-        _ = try await sendCommand("MV\(marantzLevel)")
+        _ = try await sendCommand("MV\(marantzLevel)", expectReply: false)
     }
 
     /// Increase volume by one step
     func volumeUp() async throws {
-        _ = try await sendCommand("MVUP")
+        _ = try await sendCommand("MVUP", expectReply: false)
     }
 
     /// Decrease volume by one step
     func volumeDown() async throws {
-        _ = try await sendCommand("MVDOWN")
+        _ = try await sendCommand("MVDOWN", expectReply: false)
     }
 
     /// Get current receiver volume (returns 0-100 scale)

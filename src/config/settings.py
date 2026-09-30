@@ -42,6 +42,9 @@ class DaemonConfig(BaseModel):
     port: int = 18895
     enabled: bool = True
     receiver_host: Optional[str] = "marantz"  # Marantz receiver hostname
+    # Input the receiver is switched to on launch and when playback starts
+    # ("MPLAY" is the Media Player HDMI input); None leaves the input alone.
+    receiver_input: Optional[str] = "MPLAY"
 
 
 class AppConfig(BaseModel):

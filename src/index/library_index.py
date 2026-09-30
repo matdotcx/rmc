@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 # Tables and triggers owned by this schema, dropped when migrating from an
 # older schema version (the index is a cache, so rebuilding is always safe).
@@ -83,10 +83,10 @@ class LibraryIndex:
         self._local.in_bulk = False
 
     def _needs_migration(self, cursor: sqlite3.Cursor) -> bool:
-        """True if an older schema is on disk (tracks lacks the v2 columns)."""
+        """True if an older schema is on disk (tracks lacks the v3 columns)."""
         cursor.execute("PRAGMA table_info(tracks)")
         columns = {row["name"] for row in cursor.fetchall()}
-        return bool(columns) and "music_id" not in columns
+        return bool(columns) and "in_library" not in columns
 
     def create_schema(self) -> None:
         """Create database tables and FTS5 virtual table."""
@@ -98,6 +98,8 @@ class LibraryIndex:
                 cursor.execute(f"DROP {kind} IF EXISTS {name}")
 
         # Tracks table. music_id is the MusicKit library ID used for playback.
+        # in_library is 0 for songs that only appear in playlists (e.g. Apple
+        # Music playlists); like Music.app, album/artist browsing skips them.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tracks (
                 id INTEGER PRIMARY KEY,
@@ -108,7 +110,8 @@ class LibraryIndex:
                 track_number INTEGER,
                 disc_number INTEGER,
                 duration REAL,
-                music_id TEXT UNIQUE
+                music_id TEXT UNIQUE,
+                in_library INTEGER NOT NULL DEFAULT 1
             )
         """)
 
@@ -242,7 +245,7 @@ class LibraryIndex:
         self._commit(conn)
 
     def search(self, query: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """FTS5 search across name, artist, album.
+        """FTS5 search across library songs' name, artist, album.
 
         Args:
             query: Search query string
@@ -264,7 +267,7 @@ class LibraryIndex:
                    t.disc_number, t.duration, t.music_id
             FROM tracks t
             JOIN tracks_fts fts ON t.id = fts.rowid
-            WHERE tracks_fts MATCH ?
+            WHERE tracks_fts MATCH ? AND t.in_library
             ORDER BY rank
             LIMIT ?
         """, (fts_query, limit))
@@ -368,10 +371,22 @@ class LibraryIndex:
         cursor.execute(f"""
             SELECT {_TRACK_COLUMNS}
             FROM tracks
-            WHERE album_artist = ?
+            WHERE album_artist = ? AND in_library
             ORDER BY album, disc_number, track_number, name COLLATE NOCASE
         """, (artist,))
 
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_songs(self) -> List[Dict[str, Any]]:
+        """Return every library song (not playlist-only songs), unsorted.
+
+        Returns:
+            List of track dictionaries
+        """
+        conn = self._ensure_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(f"SELECT {_TRACK_COLUMNS} FROM tracks WHERE in_library")
         return [dict(row) for row in cursor.fetchall()]
 
     def get_tracks_by_album(self, album: str, artist: str = "") -> List[Dict[str, Any]]:
@@ -388,6 +403,7 @@ class LibraryIndex:
         cursor = conn.cursor()
 
         where = "album = ? AND album_artist = ?" if artist else "album = ?"
+        where += " AND in_library"
         params = (album, artist) if artist else (album,)
         cursor.execute(f"""
             SELECT {_TRACK_COLUMNS}
@@ -486,6 +502,7 @@ class LibraryIndex:
         album_artist: str = "",
         track_number: Optional[int] = None,
         disc_number: Optional[int] = None,
+        in_library: bool = True,
     ) -> int:
         """Add a track to the index, or return the existing row for music_id.
 
@@ -498,6 +515,7 @@ class LibraryIndex:
             album_artist: Album artist (defaults to artist)
             track_number: Track number on disc
             disc_number: Disc number
+            in_library: False for playlist-only songs, hidden from browsing
 
         Returns:
             Track ID
@@ -515,11 +533,11 @@ class LibraryIndex:
 
         cursor.execute("""
             INSERT INTO tracks (name, artist, album_artist, album, track_number,
-                                disc_number, duration, music_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                disc_number, duration, music_id, in_library)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             name, artist or '', album_artist or artist or '', album or '',
-            track_number, disc_number, duration, music_id or None,
+            track_number, disc_number, duration, music_id or None, int(in_library),
         ))
 
         track_id = cursor.lastrowid
@@ -591,7 +609,7 @@ class LibraryIndex:
 
         cursor.execute("""
             SELECT album FROM tracks
-            WHERE album != ''
+            WHERE album != '' AND in_library
             GROUP BY album
             HAVING COUNT(DISTINCT album_artist) >= ?
                AND COUNT(*) < 2 * COUNT(DISTINCT album_artist)
@@ -601,7 +619,8 @@ class LibraryIndex:
         regrouped = 0
         for album in albums:
             cursor.execute(
-                "UPDATE tracks SET album_artist = 'Various Artists' WHERE album = ?", (album,)
+                "UPDATE tracks SET album_artist = 'Various Artists' WHERE album = ? AND in_library",
+                (album,)
             )
             regrouped += cursor.rowcount
             cursor.execute("DELETE FROM albums WHERE name = ?", (album,))
@@ -613,7 +632,7 @@ class LibraryIndex:
             # Drop artists left with no albums or tracks after regrouping.
             cursor.execute("""
                 DELETE FROM artists
-                WHERE name NOT IN (SELECT DISTINCT album_artist FROM tracks)
+                WHERE name NOT IN (SELECT DISTINCT album_artist FROM tracks WHERE in_library)
             """)
 
         self._commit(conn)

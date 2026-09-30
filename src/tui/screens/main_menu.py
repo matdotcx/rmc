@@ -1,135 +1,119 @@
-"""Main menu screen - iPod style."""
+"""iPod menu screens: the top-level menu and the Music menu."""
 
 import time
-from textual.app import ComposeResult
-from textual.containers import Vertical
-from textual.screen import Screen
-from textual.widgets import Static
-from textual.reactive import reactive
 
-from src.tui.widgets import MenuItem
+from src.tui.screens.list_screen import ListScreen
 
 
-class MainMenuScreen(Screen):
-    """iPod-style main menu."""
+def _now_playing_screen():
+    from src.tui.screens.now_playing import NowPlayingScreen
+    return NowPlayingScreen()
 
-    BINDINGS = [
-        ("left", "back", "Back"),
-        ("escape", "quit_app", "Quit"),
-        ("right", "select_item", "Select"),
-        ("enter", "select_item", "Select"),
-        ("up", "move_up", "Up"),
-        ("down", "move_down", "Down"),
-        ("k", "move_up", "Up"),
-        ("j", "move_down", "Down"),
-    ]
 
-    selected_index = reactive(0)
+class MenuScreen(ListScreen):
+    """A fixed iPod menu. Items are (label, has_chevron, action) tuples."""
+
+    def menu(self) -> list:
+        raise NotImplementedError
+
+    def load_items(self) -> list:
+        return self.menu()
+
+    def format_item(self, item) -> tuple:
+        label, has_chevron, _action = item
+        return (label, has_chevron, "")
+
+    def on_item_selected(self, index: int, item) -> None:
+        item[2]()
+
+
+class MainMenuScreen(MenuScreen):
+    """The top-level "iPod" menu.
+
+    Like the iPod, "Now Playing" is only listed while something is playing,
+    and after a period of inactivity the menu gives way to Now Playing.
+    """
+
+    screen_title = "iPod"
+
+    BINDINGS = [("escape", "quit_app", "Quit")]
 
     def __init__(self):
         super().__init__()
         self._last_activity = time.time()
-        self._inactivity_timer = None
-        self.menu_items = [
-            ("Now Playing", True, "*"),
-            ("Playlists", True, ""),
-            ("Artists", True, ""),
-            ("Albums", True, ""),
-            ("Search", True, ""),
-            ("Settings", True, ""),
+
+    def menu(self) -> list:
+        from src.tui.screens.settings import SettingsScreen
+        items = [
+            ("Music", True, lambda: self.app.push_screen(MusicMenuScreen())),
+            ("Settings", True, lambda: self.app.push_screen(SettingsScreen())),
+            ("Shuffle Songs", False, self._shuffle_songs),
         ]
+        if self._is_playing():
+            items.append(("Now Playing", True, lambda: self.app.push_screen(_now_playing_screen())))
+        return items
 
-    def compose(self) -> ComposeResult:
-        yield Static("Music".center(48), id="main-menu-header")
-        with Vertical(id="main-menu-list"):
-            for i, (label, has_chevron, indicator) in enumerate(self.menu_items):
-                item = MenuItem(label, has_chevron, indicator, id=f"menu-item-{i}")
-                if i == 0:
-                    item.add_class("selected")
-                yield item
-        yield Static("", id="main-menu-status")
+    def _is_playing(self) -> bool:
+        status = getattr(self.app, "player_status", None) or {}
+        return status.get("state") in ("playing", "paused")
 
+    def _shuffle_songs(self) -> None:
+        self.app.music_controller.shuffle_songs()
+        self.app.push_screen(_now_playing_screen())
+
+    # Textual calls on_mount/on_key on every class in the MRO, so these run
+    # alongside ListScreen's handlers without calling super().
     def on_mount(self) -> None:
-        self._inactivity_timer = self.set_interval(1.0, self._check_inactivity)
-        self._update_index_status()
+        self.set_interval(1.0, self._check_inactivity)
 
-    def _update_index_status(self) -> None:
-        exists, age, count = self.app.music_controller.index_status()
-        if exists:
-            status_text = f"Library: {age} | {count:,} tracks"
-        else:
-            status_text = "Library: not indexed"
-        try:
-            self.query_one("#main-menu-status", Static).update(status_text)
-        except Exception:
-            pass
+    def on_player_status(self) -> None:
+        super().on_player_status()
+        # Add or drop "Now Playing" when playback starts or stops.
+        if self._items and len(self.menu()) != len(self._items):
+            selected = self._selected
+            self._populate(self.menu())
+            self._select(selected)
 
-    def _reset_inactivity_timer(self) -> None:
+    def on_key(self, event) -> None:
+        self._last_activity = time.time()
+
+    def on_screen_resume(self) -> None:
         self._last_activity = time.time()
 
     def _check_inactivity(self) -> None:
         timeout = self.app.config_manager.config.ui.inactivity_timeout
-        if timeout == 0:
+        if timeout == 0 or self.app.screen is not self or not self._is_playing():
             return
-
-        if self.app.screen is not self:
-            return
-
-        elapsed = time.time() - self._last_activity
-        if elapsed >= timeout:
-            from src.tui.screens.now_playing import NowPlayingScreen
-            self._reset_inactivity_timer()
-            self.app.push_screen(NowPlayingScreen())
-
-    def watch_selected_index(self, old_index: int, new_index: int) -> None:
-        if old_index != new_index:
-            try:
-                self.query_one(f"#menu-item-{old_index}", MenuItem).remove_class("selected")
-                self.query_one(f"#menu-item-{new_index}", MenuItem).add_class("selected")
-            except Exception:
-                pass
-
-    def action_move_up(self) -> None:
-        self._reset_inactivity_timer()
-        if self.selected_index > 0:
-            self.selected_index -= 1
-
-    def action_move_down(self) -> None:
-        self._reset_inactivity_timer()
-        if self.selected_index < len(self.menu_items) - 1:
-            self.selected_index += 1
-
-    def on_screen_resume(self) -> None:
-        self._update_index_status()
-
-    def on_key(self, event) -> None:
-        self._reset_inactivity_timer()
-
-    def action_select_item(self) -> None:
-        self._reset_inactivity_timer()
-        selected_label = self.menu_items[self.selected_index][0]
-
-        if selected_label == "Now Playing":
-            from src.tui.screens.now_playing import NowPlayingScreen
-            self.app.push_screen(NowPlayingScreen())
-        elif selected_label == "Playlists":
-            from src.tui.screens.playlists import PlaylistsScreen
-            self.app.push_screen(PlaylistsScreen())
-        elif selected_label == "Artists":
-            from src.tui.screens.artists import ArtistsScreen
-            self.app.push_screen(ArtistsScreen())
-        elif selected_label == "Albums":
-            from src.tui.screens.albums import AlbumsScreen
-            self.app.push_screen(AlbumsScreen())
-        elif selected_label == "Search":
-            from src.tui.screens.search import SearchScreen
-            self.app.push_screen(SearchScreen())
-        elif selected_label == "Settings":
-            from src.tui.screens.settings import SettingsScreen
-            self.app.push_screen(SettingsScreen())
+        if time.time() - self._last_activity >= timeout:
+            self._last_activity = time.time()
+            self.app.push_screen(_now_playing_screen())
 
     def action_back(self) -> None:
         pass
 
     def action_quit_app(self) -> None:
         self.app.action_quit()
+
+
+class MusicMenuScreen(MenuScreen):
+    """The iPod "Music" menu."""
+
+    screen_title = "Music"
+
+    def menu(self) -> list:
+        from src.tui.screens.playlists import PlaylistsScreen
+        from src.tui.screens.artists import ArtistsScreen
+        from src.tui.screens.albums import AlbumsScreen
+        from src.tui.screens.songs import SongsScreen
+        from src.tui.screens.search import SearchScreen
+
+        def opener(screen_class):
+            return lambda: self.app.push_screen(screen_class())
+
+        return [
+            ("Playlists", True, opener(PlaylistsScreen)),
+            ("Artists", True, opener(ArtistsScreen)),
+            ("Albums", True, opener(AlbumsScreen)),
+            ("Songs", True, opener(SongsScreen)),
+            ("Search", True, opener(SearchScreen)),
+        ]

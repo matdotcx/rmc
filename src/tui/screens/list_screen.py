@@ -7,13 +7,20 @@ from textual.screen import Screen
 from textual.widgets import Static
 from textual import events, work
 
-from src.tui.widgets import MenuItem
+from src.tui.widgets import MenuItem, TitleBar
+
+NOW_PLAYING_MARK = "♪"
 
 
 def _jump_key(label: str) -> str:
     """Normalise a label for jump matching: lowercase, ignore a leading 'The '."""
     key = label.lower()
     return key[4:] if key.startswith("the ") else key
+
+
+def sort_key(label: str) -> str:
+    """Sort like the iPod: case-insensitive, ignoring a leading 'The '."""
+    return _jump_key(label)
 
 
 class ListScreen(Screen):
@@ -28,6 +35,8 @@ class ListScreen(Screen):
         load_items() -> list
         format_item(item) -> (label, has_chevron, indicator)
         on_item_selected(index, item)
+    and, for lists of songs:
+        item_music_id(item) -> str, to mark the song that is playing
     """
 
     BINDINGS = [
@@ -57,13 +66,14 @@ class ListScreen(Screen):
         self._items = []
         self._labels = []
         self._jump_keys = []
+        self._music_ids = []
         self._pool = []
         self._top = 0
         self._selected = 0
         self._jump = None  # None when not jumping, else the typed prefix
 
     def compose(self) -> ComposeResult:
-        yield Static(self.screen_title.center(48), id="list-header")
+        yield TitleBar(self.screen_title, id="list-header")
         yield Vertical(id="list-container")
         yield Static("Loading...", id="list-status")
 
@@ -79,6 +89,7 @@ class ListScreen(Screen):
         self._items = items
         self._labels = [self.format_item(item) for item in items]
         self._jump_keys = [_jump_key(label) for label, _, _ in self._labels]
+        self._music_ids = [self.item_music_id(item) for item in items]
         self._top = 0
         self._selected = 0
         self._rebuild_pool()
@@ -113,12 +124,37 @@ class ListScreen(Screen):
             self._top = self._selected - rows + 1
         self._top = max(0, min(self._top, max(0, len(self._items) - rows)))
 
+    def refresh_labels(self) -> None:
+        """Re-format every item in place (e.g. after a setting changes)."""
+        self._labels = [self.format_item(item) for item in self._items]
+        self._render_window()
+
+    def on_player_status(self) -> None:
+        """Called by the app when the polled player status changes."""
+        self.query_one(TitleBar).refresh()
+        if self._pool and any(self._music_ids):
+            self._render_window()
+
+    def _scroll_marks(self) -> list:
+        """The iPod scroll bar: a thumb in the last column, sized to the window."""
+        rows, total = len(self._pool), len(self._items)
+        if total <= rows:
+            return [" "] * rows
+        thumb = max(1, round(rows * rows / total))
+        start = round(self._top * (rows - thumb) / (total - rows))
+        return ["█" if start <= row < start + thumb else "│" for row in range(rows)]
+
     def _render_window(self) -> None:
+        now_id = ((getattr(self.app, "player_status", None) or {}).get("track") or {}).get("id")
+        marks = self._scroll_marks()
         for slot, widget in enumerate(self._pool):
             index = self._top + slot
             label, has_chevron, indicator = self._labels[index]
+            if now_id and self._music_ids[index] == now_id:
+                indicator = NOW_PLAYING_MARK
             changed = widget.label != label
             widget.update_content(label, has_chevron, indicator)
+            widget.set_scroll_mark(marks[slot])
             if index == self._selected:
                 if changed:
                     # Restart the marquee for the new label.
@@ -138,11 +174,11 @@ class ListScreen(Screen):
     def _update_status(self) -> None:
         status = self.query_one("#list-status", Static)
         if not self._items:
-            status.update("No items found")
+            status.update("  No items")
         elif self._jump is not None:
-            status.update(f"Jump: {self._jump}_")
+            status.update(f"  Jump: {self._jump}_")
         else:
-            status.update(f"{self._selected + 1}/{len(self._items)}  (/ to jump)")
+            status.update("")
 
     # -- Navigation --
 
@@ -207,6 +243,10 @@ class ListScreen(Screen):
                 self._select(index)
                 return
 
+    def item_music_id(self, item) -> str | None:
+        """MusicKit ID of the song an item plays, if the item is a song."""
+        return None
+
     @abstractmethod
     def load_items(self) -> list:
         """Load items in background thread. Return list of items."""
@@ -221,3 +261,22 @@ class ListScreen(Screen):
     def on_item_selected(self, index: int, item) -> None:
         """Handle item selection."""
         ...
+
+
+class SongListScreen(ListScreen):
+    """A list of songs, shown by title only like the iPod.
+
+    Choosing a song plays it with the whole list queued around it, and then
+    shows Now Playing.
+    """
+
+    def format_item(self, item) -> tuple:
+        return (item.get("name", "Unknown"), False, "")
+
+    def item_music_id(self, item) -> str | None:
+        return item.get("music_id")
+
+    def on_item_selected(self, index: int, item) -> None:
+        self.app.music_controller.play_tracks(self._items, index)
+        from src.tui.screens.now_playing import NowPlayingScreen
+        self.app.push_screen(NowPlayingScreen())

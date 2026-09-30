@@ -1,11 +1,20 @@
-"""MenuItem widget - single-line menu item with scrolling text and right-justified chevron."""
+"""MenuItem widget - one iPod list row: label, right-aligned value, chevron, scroll bar."""
 
 from textual.widgets import Static
 from textual.reactive import reactive
 
+SCREEN_WIDTH = 48
+
 
 class MenuItem(Static):
-    """A single menu item - one line, chevron right-justified, scrolling text."""
+    """A single menu row, laid out like a classic iPod list:
+
+        [pad] label ...marquee...  [value] [>] [scroll bar]
+
+    The value is right-aligned (a setting's current value, or the
+    now-playing marker on a song row). The last column draws the list's
+    scroll bar, which the owning list sets via ``scroll_mark``.
+    """
 
     DEFAULT_CSS = """
     MenuItem {
@@ -14,7 +23,9 @@ class MenuItem(Static):
     }
 
     MenuItem.selected {
-        text-style: bold reverse;
+        background: ansi_blue;
+        color: ansi_bright_white;
+        text-style: bold;
     }
     """
 
@@ -26,7 +37,7 @@ class MenuItem(Static):
         label: str,
         has_chevron: bool = True,
         indicator: str = "",
-        width: int = 48,
+        width: int = SCREEN_WIDTH,
         id: str | None = None,
     ):
         """Initialize menu item.
@@ -34,7 +45,7 @@ class MenuItem(Static):
         Args:
             label: The menu item text
             has_chevron: Whether to show > chevron on the right
-            indicator: Optional indicator (e.g., "*" for now playing)
+            indicator: Right-aligned value (e.g. "Off", or "♪" for now playing)
             width: Total display width for the item
             id: Optional widget ID
         """
@@ -42,6 +53,7 @@ class MenuItem(Static):
         self.label = label
         self.has_chevron = has_chevron
         self.indicator = indicator
+        self.scroll_mark = " "
         self.display_width = width
         self._scroll_timer = None
 
@@ -52,17 +64,24 @@ class MenuItem(Static):
         self.indicator = indicator
         self.refresh()
 
+    def set_scroll_mark(self, mark: str) -> None:
+        if mark != self.scroll_mark:
+            self.scroll_mark = mark
+            self.refresh()
+
+    def _available(self) -> int:
+        """Columns left for the label."""
+        # [2 pad] label [2 gap] value [1 space] chevron [1 space] scroll bar
+        value = len(self.indicator) + 1 if self.indicator else 0
+        return self.display_width - 2 - 2 - value - 1 - 1 - 1
+
     def on_mount(self) -> None:
         """Start scroll timer if text is too long."""
         self._check_scroll_needed()
 
     def _check_scroll_needed(self) -> bool:
         """Check if text needs scrolling."""
-        ind = f" {self.indicator}" if self.indicator else ""
-        full_text = f"{self.label}{ind}"
-        # Available space: width - left_pad(2) - gap(2) - chevron(1) - right_pad(2)
-        available = self.display_width - 7
-        return len(full_text) > available
+        return len(self.label) > self._available()
 
     def watch_scroll_offset(self, value: int) -> None:
         """Re-render when scroll offset changes."""
@@ -82,10 +101,7 @@ class MenuItem(Static):
 
     def _scroll_tick(self) -> None:
         """Advance scroll position."""
-        ind = f" {self.indicator}" if self.indicator else ""
-        full_text = f"{self.label}{ind}"
-        available = self.display_width - 7
-        max_offset = len(full_text) - available + 3  # +3 for wrap padding
+        max_offset = len(self.label) - self._available() + 3  # +3 for wrap padding
         self.scroll_offset = (self.scroll_offset + 1) % (max_offset + 10)  # Pause at start
 
     def on_focus(self) -> None:
@@ -111,29 +127,19 @@ class MenuItem(Static):
     def render(self) -> str:
         """Render the menu item with proper alignment."""
         chevron = ">" if self.has_chevron else " "
-        ind = f" {self.indicator}" if self.indicator else ""
-        full_text = f"{self.label}{ind}"
+        value = f"{self.indicator} " if self.indicator else ""
+        available = self._available()
 
-        # Layout: [2 pad] [text...] [2 space gap] [chevron] [2 pad]
-        left_pad = 2
-        right_pad = 2
-        gap = 2
-        available = self.display_width - left_pad - gap - 1 - right_pad
-
-        if len(full_text) <= available:
-            # Fits - just use the text
-            text_part = full_text
+        if len(self.label) <= available:
+            text_part = self.label
+        elif "selected" in self.classes:
+            # Marquee: offset the text
+            offset = max(0, self.scroll_offset - 5)  # Pause at start
+            scrolled = self.label[offset:] if offset < len(self.label) else self.label
+            text_part = scrolled[:available]
         else:
-            # Too long - scroll if selected, else truncate
-            if "selected" in self.classes:
-                # Scrolling: offset the text
-                offset = max(0, self.scroll_offset - 5)  # Pause at start
-                scrolled = full_text[offset:] if offset < len(full_text) else full_text
-                text_part = scrolled[:available]
-            else:
-                # Truncate with ellipsis
-                text_part = full_text[: available - 2] + ".."
+            # Truncate with ellipsis
+            text_part = self.label[: available - 2] + ".."
 
-        # Build line with symmetric padding
-        padding_needed = available - len(text_part)
-        return f"{' ' * left_pad}{text_part}{' ' * (padding_needed + gap)}{chevron}{' ' * right_pad}"
+        padding = available - len(text_part) + 2
+        return f"  {text_part}{' ' * padding}{value}{chevron} {self.scroll_mark}"

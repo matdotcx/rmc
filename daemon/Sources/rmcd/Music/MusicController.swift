@@ -56,11 +56,15 @@ actor MusicController {
     private var _cachedDuration: Double = 0
     private var _cachedAlbumArtist: String = ""
     private var _cachedID: String?
+    private var _cachedQueueIndex: Int?
+    private var _cachedQueueCount: Int?
 
     func getCurrentTrack() async -> TrackInfo? {
         let status = player.state.playbackStatus
         guard status == .playing || status == .paused else {
             _cachedEntryID = nil
+            _cachedQueueIndex = nil
+            _cachedQueueCount = nil
             return nil
         }
 
@@ -100,6 +104,11 @@ actor MusicController {
         _cachedDuration = duration
         _cachedAlbumArtist = albumArtist
         _cachedID = id
+
+        // Find the entry's place in the queue once per song, not every poll.
+        let entries = player.queue.entries
+        _cachedQueueIndex = entries.firstIndex { $0.id == entry.id }.map { $0 - entries.startIndex + 1 }
+        _cachedQueueCount = _cachedQueueIndex == nil ? nil : entries.count
 
         return TrackInfo(
             name: name, artist: artist, album: album,
@@ -212,7 +221,9 @@ actor MusicController {
             track: track,
             volume: volume,
             shuffle: shuffle,
-            repeatMode: repeatMode
+            repeatMode: repeatMode,
+            queueIndex: track == nil ? nil : _cachedQueueIndex,
+            queueCount: track == nil ? nil : _cachedQueueCount
         )
     }
 }

@@ -4,18 +4,17 @@ import os
 import subprocess
 
 from textual.app import ComposeResult
-from textual.containers import Vertical, Container
-from textual.screen import Screen, ModalScreen
+from textual.containers import Container
+from textual.screen import ModalScreen
 from textual.widgets import Static, Input, Button
-from textual.reactive import reactive
 from textual import work
 
-from src.tui.widgets import MenuItem
+from src.tui.screens.list_screen import ListScreen
 
 DAEMON_LABEL = "org.iaconelli.rmcd"
 
 TIMEOUT_OPTIONS = [0, 5, 15, 30]
-TIMEOUT_LABELS = {0: "Off", 5: "5s", 15: "15s", 30: "30s"}
+TIMEOUT_LABELS = {0: "Off", 5: "5 Seconds", 15: "15 Seconds", 30: "30 Seconds"}
 
 
 class ReceiverHostInputScreen(ModalScreen[str]):
@@ -77,103 +76,65 @@ class ReceiverHostInputScreen(ModalScreen[str]):
         self.dismiss(hostname)
 
 
-class SettingsScreen(Screen):
-    """Settings menu."""
+class SettingsScreen(ListScreen):
+    """iPod-style Settings: each row shows its current value on the right."""
 
-    BINDINGS = [
-        ("left", "back", "Back"),
-        ("escape", "back", "Back"),
-        ("right", "select_item", "Select"),
-        ("enter", "select_item", "Select"),
-        ("up", "move_up", "Up"),
-        ("down", "move_down", "Down"),
-        ("k", "move_up", "Up"),
-        ("j", "move_down", "Down"),
-    ]
+    screen_title = "Settings"
 
-    selected_index = reactive(0)
+    def load_items(self) -> list:
+        return ["About", "Shuffle", "Repeat", "Now Playing Timeout",
+                "Receiver", "Reindex Library", "Restart Daemon"]
 
-    def __init__(self):
-        super().__init__()
-        self._menu_items = []
-        self._item_widgets = []
+    def format_item(self, item) -> tuple:
+        status = getattr(self.app, "player_status", None) or {}
+        config = self.app.config_manager.config
+        if item == "About":
+            return (item, True, "")
+        if item == "Shuffle":
+            return (item, False, "Songs" if status.get("shuffle") else "Off")
+        if item == "Repeat":
+            return (item, False, status.get("repeat", "off").title())
+        if item == "Now Playing Timeout":
+            timeout = config.ui.inactivity_timeout
+            return (item, False, TIMEOUT_LABELS.get(timeout, f"{timeout}s"))
+        if item == "Receiver":
+            return (item, False, config.daemon.receiver_host or "None")
+        if item == "Reindex Library":
+            exists, age, _count = self.app.music_controller.index_status()
+            return (item, False, age if exists else "Never")
+        return (item, False, "")
 
-    def compose(self) -> ComposeResult:
-        yield Static("Settings".center(48), id="list-header")
-        yield Vertical(id="settings-list")
-        yield Static("", id="list-status")
+    def on_player_status(self) -> None:
+        super().on_player_status()
+        if self._items:
+            self.refresh_labels()
 
-    def on_mount(self) -> None:
-        self._rebuild_menu()
+    def on_screen_resume(self) -> None:
+        if self._items:
+            self.refresh_labels()
 
-    def _rebuild_menu(self) -> None:
-        timeout = self.app.config_manager.config.ui.inactivity_timeout
-        timeout_label = TIMEOUT_LABELS.get(timeout, f"{timeout}s")
-
-        _, index_age, index_count = self.app.music_controller.index_status()
-        if index_count > 0:
-            index_label = f"{index_age} | {index_count:,} tracks"
-        else:
-            index_label = "not indexed"
-
-        receiver_host = self.app.config_manager.config.daemon.receiver_host or "not set"
-
-        self._menu_items = [
-            ("Reindex Library", False, index_label),
-            ("Inactivity Timeout", False, timeout_label),
-            ("Receiver Hostname", False, receiver_host),
-            ("Restart Daemon", False, ""),
-        ]
-
-        # Update existing widgets in-place if count matches, otherwise build fresh
-        if len(self._item_widgets) == len(self._menu_items):
-            for i, (label, has_chevron, indicator) in enumerate(self._menu_items):
-                self._item_widgets[i].update_content(label, has_chevron, indicator)
-                if i == self.selected_index:
-                    self._item_widgets[i].add_class("selected")
-                else:
-                    self._item_widgets[i].remove_class("selected")
-        else:
-            container = self.query_one("#settings-list", Vertical)
-            container.remove_children()
-            widgets = []
-            for i, (label, has_chevron, indicator) in enumerate(self._menu_items):
-                mi = MenuItem(label, has_chevron, indicator)
-                if i == self.selected_index:
-                    mi.add_class("selected")
-                widgets.append(mi)
-            container.mount(*widgets)
-            self._item_widgets = widgets
-
-    def watch_selected_index(self, old_index: int, new_index: int) -> None:
-        if old_index == new_index:
-            return
-        try:
-            if 0 <= old_index < len(self._item_widgets):
-                self._item_widgets[old_index].remove_class("selected")
-            if 0 <= new_index < len(self._item_widgets):
-                self._item_widgets[new_index].add_class("selected")
-        except Exception:
-            pass
-
-    def action_move_up(self) -> None:
-        if self.selected_index > 0:
-            self.selected_index -= 1
-
-    def action_move_down(self) -> None:
-        if self.selected_index < len(self._menu_items) - 1:
-            self.selected_index += 1
-
-    def action_select_item(self) -> None:
-        label = self._menu_items[self.selected_index][0]
-        if label == "Reindex Library":
-            self._trigger_reindex()
-        elif label == "Inactivity Timeout":
+    def on_item_selected(self, index: int, item) -> None:
+        if item == "About":
+            self.app.push_screen(AboutScreen())
+        elif item == "Shuffle":
+            self.app.music_controller.toggle_shuffle()
+            self._refresh_status()
+        elif item == "Repeat":
+            self.app.music_controller.cycle_repeat()
+            self._refresh_status()
+        elif item == "Now Playing Timeout":
             self._cycle_timeout()
-        elif label == "Receiver Hostname":
+        elif item == "Receiver":
             self._edit_receiver_hostname()
-        elif label == "Restart Daemon":
+        elif item == "Reindex Library":
+            self._trigger_reindex()
+        elif item == "Restart Daemon":
             self._restart_daemon()
+
+    def _refresh_status(self) -> None:
+        status = self.app.music_controller.get_status()
+        if status:
+            self.app.apply_player_status(status)
 
     @work(exclusive=True, thread=True)
     def _trigger_reindex(self) -> None:
@@ -185,7 +146,7 @@ class SettingsScreen(Screen):
             self.app.call_from_thread(
                 self.app.notify, "Reindex failed — is daemon running?", severity="error"
             )
-        self.app.call_from_thread(self._rebuild_menu)
+        self.app.call_from_thread(self.refresh_labels)
 
     def _cycle_timeout(self) -> None:
         config = self.app.config_manager.config
@@ -196,7 +157,7 @@ class SettingsScreen(Screen):
             idx = 0
         config.ui.inactivity_timeout = TIMEOUT_OPTIONS[(idx + 1) % len(TIMEOUT_OPTIONS)]
         self.app.config_manager.save()
-        self._rebuild_menu()
+        self.refresh_labels()
 
     def _edit_receiver_hostname(self) -> None:
         current_value = self.app.config_manager.config.daemon.receiver_host or ""
@@ -207,7 +168,7 @@ class SettingsScreen(Screen):
                 old_hostname = config.daemon.receiver_host
                 config.daemon.receiver_host = hostname if hostname else None
                 self.app.config_manager.save()
-                self._rebuild_menu()
+                self.refresh_labels()
 
                 if hostname != old_hostname:
                     if hostname:
@@ -255,5 +216,27 @@ class SettingsScreen(Screen):
                 severity="error"
             )
 
-    def action_back(self) -> None:
-        self.app.pop_screen()
+
+
+class AboutScreen(ListScreen):
+    """Library totals, like the iPod's About screen."""
+
+    screen_title = "About"
+
+    def load_items(self) -> list:
+        controller = self.app.music_controller
+        _exists, age, _count = controller.index_status()
+        return [
+            ("Songs", f"{len(controller.get_all_songs()):,}"),
+            ("Artists", f"{len(controller.get_all_artists()):,}"),
+            ("Albums", f"{len(controller.get_all_albums()):,}"),
+            ("Playlists", f"{len(controller.get_playlists()):,}"),
+            ("Updated", age),
+        ]
+
+    def format_item(self, item) -> tuple:
+        label, value = item
+        return (label, False, value)
+
+    def on_item_selected(self, index: int, item) -> None:
+        pass

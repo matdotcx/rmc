@@ -4,11 +4,14 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.theme import Theme
 from textual import work
+import random
 
 from src.music.rmcd_bridge import RMCDBridge, RMCDConnectionError, RMCDError
 from src.index.library_index import LibraryIndex, SCHEMA_VERSION
-from src.tui.screens.now_playing import NowPlayingScreen
 from src.config.settings import ConfigManager
+
+
+MAX_QUEUE = 1000
 
 
 class MusicController:
@@ -71,6 +74,10 @@ class MusicController:
 
     def play_tracks(self, tracks: list, start: int = 0) -> None:
         """Queue tracks (index rows) and start playing at tracks[start]."""
+        # The Songs list and Shuffle Songs span the whole library; queue a
+        # window from the chosen song rather than every song in it.
+        if len(tracks) > MAX_QUEUE:
+            tracks, start = tracks[start:start + MAX_QUEUE], 0
         ids = [t.get("music_id") for t in tracks]
         start_id = ids[start] if 0 <= start < len(ids) else None
         if not start_id:
@@ -91,6 +98,15 @@ class MusicController:
     def play_playlist(self, music_id: str) -> None:
         self._call(self._bridge.play_playlist, music_id)
 
+    def shuffle_songs(self) -> None:
+        """Play the whole library in random order, like the iPod's Shuffle Songs."""
+        songs = self._index.get_all_songs()
+        if not songs:
+            self.app.notify("Library not indexed yet", severity="warning")
+            return
+        random.shuffle(songs)
+        self.play_tracks(songs, 0)
+
     # -- Library reads (local SQLite index) --
 
     def get_playlists(self) -> list:
@@ -107,6 +123,9 @@ class MusicController:
 
     def get_tracks_by_artist(self, name: str) -> list:
         return self._index.get_tracks_by_artist(name)
+
+    def get_all_songs(self) -> list:
+        return self._index.get_all_songs()
 
     def get_all_albums(self) -> list:
         return self._index.get_all_albums()
@@ -141,6 +160,7 @@ class MusicController:
             self._index.clear()
             for t in tracks:
                 album_artist = t.get("album_artist") or t.get("artist") or "Unknown Artist"
+                in_library = t.get("in_library", True)
                 self._index.add_track(
                     name=t.get("name", ""),
                     artist=t.get("artist", ""),
@@ -150,7 +170,13 @@ class MusicController:
                     album_artist=album_artist,
                     track_number=t.get("track_number"),
                     disc_number=t.get("disc_number"),
+                    in_library=in_library,
                 )
+                # Playlist-only songs (e.g. from Apple Music playlists) stay
+                # playable from their playlists but, as in Music.app, don't
+                # create partial albums or artists in the library views.
+                if not in_library:
+                    continue
                 self._index.add_artist(album_artist)
                 if t.get("album"):
                     self._index.add_album(t["album"], album_artist)
@@ -197,39 +223,9 @@ class RMCApp(App):
     """Apple Music Remote Control TUI Application."""
 
     CSS = """
-    #main-menu-header {
-        width: 100%;
-        height: 1;
-        text-style: bold;
-    }
-
-    #main-menu-list {
+    #now-playing-display {
         width: 100%;
         height: auto;
-        padding: 0;
-    }
-
-    #main-menu-status {
-        width: 100%;
-        height: 1;
-        margin-top: 1;
-    }
-
-    #now-playing-container {
-        width: 100%;
-        height: 100%;
-        padding: 1;
-    }
-
-    .now-playing-display {
-        width: 100%;
-        height: auto;
-    }
-
-    #list-header {
-        width: 100%;
-        height: 1;
-        text-style: bold;
     }
 
     #list-container {
@@ -245,14 +241,10 @@ class RMCApp(App):
 
     #search-input {
         width: 100%;
-        height: 3;
-        margin: 0 1;
-    }
-
-    #settings-list {
-        width: 100%;
-        height: auto;
-        padding: 0;
+        height: 1;
+        border: none;
+        padding: 0 2;
+        margin-bottom: 1;
     }
     """
 
@@ -298,6 +290,8 @@ class RMCApp(App):
         daemon_cfg = self.config_manager.config.daemon
         self.music_controller = MusicController(self, host=daemon_cfg.host, port=daemon_cfg.port)
         self._should_exit = False
+        # Latest status polled from the daemon; read by title bars and screens.
+        self.player_status: dict = {}
 
     def compose(self) -> ComposeResult:
         return
@@ -313,7 +307,18 @@ class RMCApp(App):
         from src.tui.screens.main_menu import MainMenuScreen
         self.push_screen(MainMenuScreen())
         self.start_update_loop()
+        self._wake_receiver()
         self._auto_reindex_if_stale()
+
+    @work(exclusive=False, thread=True, exit_on_error=False)
+    def _wake_receiver(self) -> None:
+        """Power the receiver on and switch it to our input, as on launch."""
+        try:
+            self.music_controller._bridge.wake_receiver()
+        except RMCDConnectionError:
+            pass  # the status loop already reports a missing daemon
+        except RMCDError as e:
+            self.call_from_thread(self.notify, f"Receiver: {e}", severity="warning")
 
     @work(exclusive=False, thread=True, exit_on_error=False)
     def _auto_reindex_if_stale(self) -> None:
@@ -338,28 +343,18 @@ class RMCApp(App):
         while not self._should_exit:
             try:
                 status = self.music_controller.get_status()
-
-                self.call_from_thread(
-                    self._update_now_playing_screen,
-                    status.get('track'),
-                    status.get('state', 'stopped'),
-                    status.get('volume', 50),
-                    status.get('shuffle', False),
-                    status.get('repeat', 'off'),
-                )
+                self.call_from_thread(self.apply_player_status, status)
 
                 time.sleep(self.config_manager.config.ui.update_interval)
             except Exception:
                 time.sleep(1)
 
-    def _update_now_playing_screen(self, track_info, player_state, volume, shuffle, repeat_mode):
-        if isinstance(self.screen, NowPlayingScreen):
-            screen = self.screen
-            screen.update_track_info(track_info)
-            screen.player_state = player_state
-            screen.volume = volume
-            screen.shuffle = shuffle
-            screen.repeat_mode = repeat_mode
+    def apply_player_status(self, status: dict) -> None:
+        """Store the latest player status and let the current screen redraw."""
+        self.player_status = status or {}
+        handler = getattr(self.screen, "on_player_status", None)
+        if handler:
+            handler()
 
     def action_quit(self) -> None:
         import os

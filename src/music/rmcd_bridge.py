@@ -111,6 +111,12 @@ class RMCDBridge:
     def play_playlist(self, music_id: str) -> None:
         self._post("/playback/play-playlist", json={"id": music_id})
 
+    # MARK: - Receiver
+
+    def wake_receiver(self) -> None:
+        """Power the receiver on and select rmc's input (no-op if none configured)."""
+        self._post("/receiver/wake")
+
     # MARK: - Player state (individual getters for compatibility)
 
     def get_player_state(self) -> Literal['playing', 'paused', 'stopped']:

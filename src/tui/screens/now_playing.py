@@ -1,15 +1,33 @@
-"""Now Playing screen for the TUI."""
+"""Now Playing screen, laid out like the classic iPod's."""
 
 from textual.app import ComposeResult
-from textual.containers import Container
 from textual.screen import Screen
 from textual.widgets import Static
-from textual.reactive import reactive
-from typing import Optional, Dict, Any
+
+from src.tui.widgets import TitleBar, SCREEN_WIDTH
+
+# How long the volume bar replaces the progress bar after a volume change.
+VOLUME_BAR_SECONDS = 2.0
+BAR_FILLED = "━"
+BAR_EMPTY = "─"
+
+
+def _bar(fraction: float, width: int) -> str:
+    filled = round(max(0.0, min(1.0, fraction)) * width)
+    return BAR_FILLED * filled + BAR_EMPTY * (width - filled)
+
+
+def _clock(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _fit(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 2] + ".."
 
 
 class NowPlayingScreen(Screen):
-    """Screen displaying currently playing track and playback controls."""
+    """Screen displaying the current song, its place in the queue and progress."""
 
     BINDINGS = [
         ("left", "back", "Back"),
@@ -20,124 +38,76 @@ class NowPlayingScreen(Screen):
         ("s", "toggle_shuffle", "Shuffle"),
         ("r", "cycle_repeat", "Repeat"),
         ("+", "volume_up", "Volume Up"),
+        ("=", "volume_up", "Volume Up"),
         ("-", "volume_down", "Volume Down"),
     ]
 
-    track_name = reactive("No track playing")
-    track_artist = reactive("")
-    track_album = reactive("")
-    track_position = reactive(0.0)
-    track_duration = reactive(0.0)
-    player_state = reactive("stopped")
-    volume = reactive(50)
-    shuffle = reactive(False)
-    repeat_mode = reactive("off")
+    def __init__(self):
+        super().__init__()
+        self._volume_timer = None
 
     def compose(self) -> ComposeResult:
-        with Container(id="now-playing-container"):
-            yield Static(id="now-playing-display", classes="now-playing-display")
+        yield TitleBar("Now Playing")
+        yield Static(id="now-playing-display")
 
     def on_mount(self) -> None:
-        self._fetch_status()
-        self.update_display()
+        # Show the current song straight away rather than on the next poll.
+        status = self.app.music_controller.get_status()
+        if status:
+            self.app.player_status = status
+        self.on_player_status()
 
-    def _fetch_status(self) -> None:
-        """Immediately fetch status from the daemon."""
-        try:
-            status = self.app.music_controller.get_status()
-            if status:
-                self.update_track_info(status.get('track'))
-                self.player_state = status.get('state', 'stopped')
-                self.volume = status.get('volume', 50)
-                self.shuffle = status.get('shuffle', False)
-                self.repeat_mode = status.get('repeat', 'off')
-        except Exception:
-            pass
-
-    def watch_track_name(self, new_value: str) -> None:
-        self.update_display()
-
-    def watch_track_artist(self, new_value: str) -> None:
-        self.update_display()
-
-    def watch_track_album(self, new_value: str) -> None:
-        self.update_display()
-
-    def watch_track_position(self, new_value: float) -> None:
-        self.update_display()
-
-    def watch_track_duration(self, new_value: float) -> None:
-        self.update_display()
-
-    def watch_player_state(self, new_value: str) -> None:
-        self.update_display()
-
-    def watch_volume(self, new_value: int) -> None:
-        self.update_display()
-
-    def watch_shuffle(self, new_value: bool) -> None:
-        self.update_display()
-
-    def watch_repeat_mode(self, new_value: str) -> None:
-        self.update_display()
-
-    def update_display(self) -> None:
-        try:
-            display_widget = self.query_one("#now-playing-display", Static)
-        except Exception:
-            return
-        display_widget.update(self._format_display())
+    def on_player_status(self) -> None:
+        self.query_one(TitleBar).refresh()
+        self.query_one("#now-playing-display", Static).update(self._format_display())
 
     def _format_display(self) -> str:
-        lines = []
+        status = self.app.player_status or {}
+        track = status.get("track")
+        width = SCREEN_WIDTH - 4
+        lines = [""]
+
+        if not track:
+            lines += ["", "Not Playing".center(SCREEN_WIDTH)]
+            return "\n".join(lines)
+
+        index, count = status.get("queue_index"), status.get("queue_count")
+        lines.append(f"  {index} of {count}" if index and count else "")
         lines.append("")
-        lines.append(f"  ⎿  State: {self.player_state}")
-        lines.append(f"     Track: {self.track_name}")
+        lines.append(f"  {_fit(track.get('name', ''), width)}")
+        lines.append(f"  {_fit(track.get('artist', ''), width)}")
+        lines.append(f"  {_fit(track.get('album', ''), width)}")
+        lines += ["", ""]
 
-        if self.track_artist:
-            lines.append(f"     Artist: {self.track_artist}")
+        if self._volume_timer is not None:
+            volume = status.get("volume", 0)
+            label = "Volume"
+            bar_width = SCREEN_WIDTH - 4 - len(label) - 1 - 4
+            lines.append(f"  {label} {_bar(volume / 100, bar_width)} {volume:>3}")
+        else:
+            position = track.get("position", 0.0)
+            duration = track.get("duration", 0.0)
+            elapsed = _clock(position)
+            remaining = "-" + _clock(duration - position)
+            bar_width = SCREEN_WIDTH - 4 - len(elapsed) - len(remaining) - 2
+            fraction = position / duration if duration else 0.0
+            lines.append(f"  {elapsed} {_bar(fraction, bar_width)} {remaining}")
 
-        if self.track_album:
-            lines.append(f"     Album: {self.track_album}")
-
-        if self.track_duration > 0:
-            position = self._format_duration(self.track_position)
-            duration = self._format_duration(self.track_duration)
-            lines.append(f"     Time: {position} / {duration}")
-
-        lines.append("")
-        lines.append(f"     Volume: {self.volume}%")
-
-        modes = []
-        if self.shuffle:
-            modes.append("shuffle: on")
-        if self.repeat_mode != "off":
-            modes.append(f"repeat: {self.repeat_mode}")
-        if modes:
-            lines.append(f"     {' | '.join(modes)}")
-
-        lines.append("")
         return "\n".join(lines)
 
-    @staticmethod
-    def _format_duration(seconds: float) -> str:
-        minutes = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{minutes:02d}:{secs:02d}"
+    def _show_volume(self) -> None:
+        """Swap the progress bar for the volume bar for a moment, like the iPod."""
+        if self._volume_timer is not None:
+            self._volume_timer.stop()
+        self._volume_timer = self.set_timer(VOLUME_BAR_SECONDS, self._hide_volume)
+        status = self.app.music_controller.get_status()
+        if status:
+            self.app.player_status = status
+        self.on_player_status()
 
-    def update_track_info(self, track_info: Optional[Dict[str, Any]]) -> None:
-        if track_info is None:
-            self.track_name = "No track playing"
-            self.track_artist = ""
-            self.track_album = ""
-            self.track_position = 0.0
-            self.track_duration = 0.0
-        else:
-            self.track_name = track_info.get('name', 'Unknown')
-            self.track_artist = track_info.get('artist', 'Unknown Artist')
-            self.track_album = track_info.get('album', 'Unknown Album')
-            self.track_position = track_info.get('position', 0.0)
-            self.track_duration = track_info.get('duration', 0.0)
+    def _hide_volume(self) -> None:
+        self._volume_timer = None
+        self.on_player_status()
 
     def action_playpause(self) -> None:
         self.app.music_controller.playpause()
@@ -156,9 +126,11 @@ class NowPlayingScreen(Screen):
 
     def action_volume_up(self) -> None:
         self.app.music_controller.volume_up()
+        self._show_volume()
 
     def action_volume_down(self) -> None:
         self.app.music_controller.volume_down()
+        self._show_volume()
 
     def action_back(self) -> None:
         self.app.pop_screen()

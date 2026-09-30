@@ -6,10 +6,21 @@ func buildRouter(
     library: MusicKitLibrary,
     authManager: AuthorizationManager,
     receiverController: MarantzReceiverController?,
+    receiverInput: String?,
     startTime: Date
 ) -> Router<BasicRequestContext> {
     let router = Router()
     let api = router.group("api/v1")
+
+    /// Power the receiver on and switch it to our input before playing.
+    /// Best effort: playback shouldn't fail because the receiver is away.
+    @Sendable func wakeReceiver() async {
+        do {
+            try await receiverController?.wake(input: receiverInput)
+        } catch {
+            print("Receiver wake failed: \(error.localizedDescription)")
+        }
+    }
 
     // MARK: - System
 
@@ -34,6 +45,7 @@ func buildRouter(
 
     api.post("playback/play") { _, _ -> Response in
         do {
+            await wakeReceiver()
             try await controller.play()
             return try encodeJSON(OKResponse())
         } catch {
@@ -52,6 +64,9 @@ func buildRouter(
 
     api.post("playback/playpause") { _, _ -> Response in
         do {
+            if await controller.getPlayerState() != "playing" {
+                await wakeReceiver()
+            }
             try await controller.playpause()
             return try encodeJSON(OKResponse())
         } catch {
@@ -90,6 +105,7 @@ func buildRouter(
     api.post("playback/play-queue") { request, context -> Response in
         do {
             let body = try await decodeJSON(PlayQueueRequest.self, from: request, context: context)
+            await wakeReceiver()
             try await controller.playQueue(ids: body.ids, start: body.start)
             return try encodeJSON(OKResponse())
         } catch {
@@ -100,10 +116,22 @@ func buildRouter(
     api.post("playback/play-playlist") { request, context -> Response in
         do {
             let body = try await decodeJSON(PlayPlaylistRequest.self, from: request, context: context)
+            await wakeReceiver()
             try await controller.playPlaylist(id: body.id)
             return try encodeJSON(OKResponse())
         } catch {
             return try errorResponse(error, status: .internalServerError)
+        }
+    }
+
+    // MARK: - Receiver
+
+    api.post("receiver/wake") { _, _ -> Response in
+        do {
+            try await receiverController?.wake(input: receiverInput)
+            return try encodeJSON(OKResponse())
+        } catch {
+            return try errorResponse(error, status: .badGateway)
         }
     }
 

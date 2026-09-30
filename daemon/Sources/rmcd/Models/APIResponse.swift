@@ -6,10 +6,16 @@ struct StatusResponse: Codable, Sendable {
     let volume: Int
     let shuffle: Bool
     let repeatMode: String
+    /// 1-based position of the current song in the play queue, and the
+    /// queue's length ("3 of 14" on Now Playing).
+    var queueIndex: Int? = nil
+    var queueCount: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case state, track, volume, shuffle
         case repeatMode = "repeat"
+        case queueIndex = "queue_index"
+        case queueCount = "queue_count"
     }
 }
 

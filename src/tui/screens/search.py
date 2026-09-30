@@ -7,7 +7,7 @@ from textual.widgets import Static, Input
 from textual.reactive import reactive
 from textual import work
 
-from src.tui.widgets import MenuItem
+from src.tui.widgets import MenuItem, TitleBar
 
 
 class SearchScreen(Screen):
@@ -30,13 +30,16 @@ class SearchScreen(Screen):
         self._result_widgets = []
 
     def compose(self) -> ComposeResult:
-        yield Static("Search".center(48), id="list-header")
+        yield TitleBar("Search", id="list-header")
         yield Input(placeholder="Type to search...", id="search-input")
         yield VerticalScroll(id="list-container", can_focus=False)
         yield Static("", id="list-status")
 
     def on_mount(self) -> None:
         self.query_one("#search-input", Input).focus()
+
+    def on_player_status(self) -> None:
+        self.query_one(TitleBar).refresh()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         query = event.value.strip()
@@ -65,7 +68,7 @@ class SearchScreen(Screen):
         container.remove_children()
 
         if not items:
-            self.query_one("#list-status", Static).update("No results")
+            self.query_one("#list-status", Static).update("  No Results")
             return
 
         widgets = []
@@ -79,7 +82,7 @@ class SearchScreen(Screen):
         container.mount(*widgets)
         self._result_widgets = widgets
         self.selected_index = -1
-        self.query_one("#list-status", Static).update(f"{len(items)} results")
+        self.query_one("#list-status", Static).update("")
 
     def on_key(self, event) -> None:
         inp = self.query_one("#search-input", Input)

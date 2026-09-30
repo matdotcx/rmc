@@ -184,7 +184,8 @@ actor MusicKitLibrary {
             albumArtist: albumArtist,
             id: song.id.rawValue,
             trackNumber: song.trackNumber,
-            discNumber: song.discNumber
+            discNumber: song.discNumber,
+            inLibrary: song.libraryAddedDate != nil
         )
     }
 
