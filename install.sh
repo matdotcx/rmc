@@ -18,34 +18,16 @@ pip install -e .
 echo "✓ Python package installed"
 echo ""
 
-# 2. Build and sign daemon
-echo "🔨 Building rmcd daemon..."
-cd daemon
-make sign
-cd ..
-echo "✓ Daemon built and signed"
-echo ""
-
-# 3. Create config directory
+# 2. Create config directory
 echo "📁 Creating config directory..."
 mkdir -p "$HOME/.config/rmc"
 echo "✓ Config directory created"
 echo ""
 
-# 4. Install LaunchAgent
-echo "🚀 Installing LaunchAgent..."
-PLIST_NAME="org.iaconelli.rmcd.plist"
-PLIST_DEST="$HOME/Library/LaunchAgents/$PLIST_NAME"
-
-mkdir -p "$HOME/Library/LaunchAgents"
-cp "$PLIST_NAME" "$PLIST_DEST"
-
-# Unload if already loaded
-launchctl unload "$PLIST_DEST" 2>/dev/null || true
-
-# Load the LaunchAgent
-launchctl load "$PLIST_DEST"
-echo "✓ LaunchAgent installed and started"
+# 3-4. Build, sign and install the daemon LaunchAgent
+echo "🔨 Building rmcd daemon and installing LaunchAgent..."
+make -C daemon install
+echo "✓ Daemon built, signed and started"
 echo ""
 
 # 5. Add rmc to PATH
@@ -58,15 +40,8 @@ else
 fi
 echo ""
 
-# 6. Wait for daemon to start
-echo "⏳ Waiting for daemon to start..."
-sleep 3
-
-# 7. Authorize MusicKit
-echo "🎵 Authorizing MusicKit..."
-curl -X POST -s http://127.0.0.1:18895/api/v1/system/authorize > /dev/null 2>&1 || true
-echo "✓ MusicKit authorized"
-echo ""
+# 6. MusicKit authorization is requested by scripts/start-daemon.sh once
+# the daemon is up; approve the Apple Music prompt on this Mac if shown.
 
 echo "======================================"
 echo "  Installation Complete! 🎉"
@@ -80,8 +55,8 @@ echo ""
 echo "The daemon is now running and will start automatically on login."
 echo ""
 echo "Useful commands:"
-echo "  Start daemon:    launchctl load ~/Library/LaunchAgents/$PLIST_NAME"
-echo "  Stop daemon:     launchctl unload ~/Library/LaunchAgents/$PLIST_NAME"
+echo "  Restart daemon:  launchctl kickstart -k gui/$(id -u)/org.iaconelli.rmcd"
+echo "  Stop daemon:     make -C daemon uninstall"
 echo "  View logs:       tail -f ~/.config/rmc/daemon.log"
 echo "  Uninstall:       $SCRIPT_DIR/scripts/uninstall-daemon.sh"
 echo ""

@@ -62,6 +62,19 @@ rmc
 Config stored in `~/.config/rmc/config.json`:
 - Inactivity timeout (auto-return to Now Playing)
 - Update interval
+- Daemon host/port and Marantz receiver hostname (`daemon.receiver_host`)
+
+### Daemon
+
+`rmcd` runs as the `org.iaconelli.rmcd` LaunchAgent, which starts it via
+`scripts/start-daemon.sh` so the settings above are applied. Changing the
+receiver in Settings restarts it automatically.
+
+```bash
+make -C daemon install      # build, sign, install and start
+launchctl kickstart -k gui/$(id -u)/org.iaconelli.rmcd   # restart
+make -C daemon uninstall    # stop and remove
+```
 
 ## License
 

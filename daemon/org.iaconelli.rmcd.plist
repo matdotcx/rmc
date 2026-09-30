@@ -6,12 +6,7 @@
 	<string>org.iaconelli.rmcd</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/bin/open</string>
-		<string>-W</string>
-		<string>@APP_BUNDLE@</string>
-		<string>--args</string>
-		<string>--port</string>
-		<string>18895</string>
+		<string>@REPO@/scripts/start-daemon.sh</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -19,9 +14,16 @@
 	<true/>
 	<key>LimitLoadToSessionType</key>
 	<string>Aqua</string>
+	<key>WorkingDirectory</key>
+	<string>@REPO@</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
 	<key>StandardOutPath</key>
-	<string>/tmp/rmcd.log</string>
+	<string>@HOME@/.config/rmc/daemon.log</string>
 	<key>StandardErrorPath</key>
-	<string>/tmp/rmcd.log</string>
+	<string>@HOME@/.config/rmc/daemon.error.log</string>
 </dict>
 </plist>

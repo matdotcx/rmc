@@ -1,7 +1,7 @@
 """Settings screen."""
 
+import os
 import subprocess
-from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Vertical, Container
@@ -11,6 +11,8 @@ from textual.reactive import reactive
 from textual import work
 
 from src.tui.widgets import MenuItem
+
+DAEMON_LABEL = "org.iaconelli.rmcd"
 
 TIMEOUT_OPTIONS = [0, 5, 15, 30]
 TIMEOUT_LABELS = {0: "Off", 5: "5s", 15: "15s", 30: "30s"}
@@ -222,21 +224,10 @@ class SettingsScreen(Screen):
         """Restart the rmcd daemon with current configuration."""
         self.app.call_from_thread(self.app.notify, "Restarting daemon...")
 
-        # Find the start-daemon script
-        script_path = Path.home() / "Developer/workspace/matdotcx/rmc/scripts/start-daemon.sh"
-
-        if not script_path.exists():
-            self.app.call_from_thread(
-                self.app.notify,
-                f"Start script not found at {script_path}",
-                severity="error"
-            )
-            return
-
+        # Restart the LaunchAgent; its start script re-reads the config.
         try:
-            # Run the start-daemon script
             result = subprocess.run(
-                [str(script_path)],
+                ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{DAEMON_LABEL}"],
                 capture_output=True,
                 text=True,
                 timeout=15
